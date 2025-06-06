@@ -1,0 +1,22 @@
+[package]
+name = "assets2036_rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+log = "0.4.21"
+# url = { version = "2.3.1", default-features = false } # Removed due to build issues
+tokio = { version = "1.15.0", features = ["rt", "macros", "time", "sync"] } # Added "sync"
+rumqttc = "0.20.0"
+async-trait = "0.1.77"
+uuid = { version = "1.6.1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] } # Added chrono
+
+[[test]]
+name = "integration_test"
+path = "tests/integration_test.rs"
