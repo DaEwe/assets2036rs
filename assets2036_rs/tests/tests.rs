@@ -2,7 +2,10 @@ use assets2036_rs::*;
 use async_trait::async_trait;
 
 // Import validate_value if it's public in the crate
-use assets2036_rs::*;
+
+use assets2036_rs::{
+    validate_value, CommunicationClient, MqttCommunicationClient, PropertyDefinition, PropertyType,
+};
 use serde_json::{json, Value};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
