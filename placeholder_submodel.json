@@ -1,0 +1,90 @@
+{
+  "id": "urn:example:submodel:placeholder",
+  "name": "PlaceholderSubmodel",
+  "description": "A placeholder submodel for testing code generation.",
+  "properties": [
+    {
+      "name": "status",
+      "type": "string",
+      "description": "The current status of the asset."
+    },
+    {
+      "name": "count",
+      "type": "integer",
+      "description": "A counter value."
+    },
+    {
+      "name": "isEnabled",
+      "type": "boolean",
+      "description": "Indicates if the asset is enabled."
+    },
+    {
+      "name": "measurements",
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "description": "A list of measurements."
+    },
+    {
+      "name": "configuration",
+      "type": "object",
+      "properties": [
+        {
+          "name": "host",
+          "type": "string"
+        },
+        {
+          "name": "port",
+          "type": "integer"
+        }
+      ],
+      "description": "Asset configuration parameters."
+    }
+  ],
+  "methods": [
+    {
+      "name": "start",
+      "description": "Starts the asset.",
+      "inputs": [
+        {
+          "name": "delay",
+          "type": "integer",
+          "description": "Delay in seconds before starting."
+        }
+      ],
+      "outputs": [
+        {
+          "name": "result",
+          "type": "string",
+          "description": "The result of the start operation."
+        }
+      ]
+    },
+    {
+      "name": "stop",
+      "description": "Stops the asset.",
+      "inputs": [],
+      "outputs": []
+    }
+  ],
+  "events": [
+    {
+      "name": "errorOccurred",
+      "description": "Fired when an error occurs.",
+      "payload": {
+        "type": "object",
+        "properties": [
+          {
+            "name": "errorCode",
+            "type": "integer"
+          },
+          {
+            "name": "errorMessage",
+            "type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}
