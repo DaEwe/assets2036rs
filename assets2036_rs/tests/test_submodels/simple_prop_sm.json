@@ -1,0 +1,6 @@
+{
+    "name": "SimplePropSM",
+    "properties": {
+        "status": {"type": "string"}
+    }
+}

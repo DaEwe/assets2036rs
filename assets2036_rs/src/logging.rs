@@ -1,35 +1,59 @@
-use crate::Event; // Assuming Event is directly accessible, might need adjustment based on actual module structure
+use crate::Event;
 use log::{Level, Metadata, Record};
 use serde_json::json;
 use std::sync::Arc;
 
+/// A logging handler that forwards log records to an ASSETS2036 event.
+///
+/// This struct implements the `log::Log` trait and is intended to be used
+/// with the `log` crate facade. When registered as a logger, it takes log records,
+/// formats them, and then triggers a specified `log_entry` event on an asset's
+/// `_endpoint` submodel (typically the AssetManager's endpoint).
 #[derive(Debug)]
 pub struct RustLoggingHandler {
-    // This will be Arc<crate::Event> after the refactor.
-    // For now, to make it compilable before refactoring SubModel,
-    // we might need a placeholder or accept that this part won't fully work until SubModel is refactored.
-    // Let's proceed as if it's Arc<Event> as per the plan.
+    /// The `Arc<Event>` representing the `_endpoint/log_entry` event.
+    /// Formatted log messages will be sent by triggering this event.
     pub log_event: Arc<Event>,
 }
 
 impl log::Log for RustLoggingHandler {
-    fn enabled(&self, metadata: &Metadata) -> bool {
+    /// Checks if a log record with the given metadata would be enabled.
+    ///
+    /// # Parameters
+    /// * `metadata`: The metadata for the log record, including level and target.
+    ///
+    /// # Returns
+    /// Currently always returns `true`, meaning all log levels passed by the `log` facade
+    /// will be processed by the `log` method. This could be extended to filter
+    /// by `metadata.level()` or `metadata.target()`.
+    fn enabled(&self, _metadata: &Metadata) -> bool {
         // Potentially filter by level here if desired
         // For example: metadata.level() <= log::max_level()
         // Or, metadata.level() <= Level::Info to only log Info and above via this handler
-        true // Enable for all levels for now
+        true
     }
 
+    /// Processes a log record.
+    ///
+    /// This method formats the log record into a string including its level,
+    /// target (module path), line number, and message. It then constructs a JSON payload
+    /// with "level" and "message" fields and asynchronously triggers the `log_event`
+    /// (assumed to be `_endpoint/log_entry`).
+    ///
+    /// If triggering the event fails (e.g., due to a communication error), the error
+    /// along with the original log message is printed to `stderr` using `eprintln!`.
+    /// This is to avoid potential infinite loops if the error logging itself used this handler.
+    ///
+    /// # Parameters
+    /// * `record`: The log record to process, provided by the `log` facade.
     fn log(&self, record: &Record) {
         if !self.enabled(record.metadata()) {
             return;
         }
 
-        // Format the log message
-        // Using module_path and line for more detailed logs, similar to common logging formats.
         let message = format!(
             "[{target} {line}] {args}",
-            target = record.target(), // often module_path
+            target = record.target(),
             line = record.line().unwrap_or(0),
             args = record.args()
         );
@@ -41,14 +65,10 @@ impl log::Log for RustLoggingHandler {
 
         let event_clone = Arc::clone(&self.log_event);
 
-        // Spawn a Tokio task to send the log event asynchronously
-        // This avoids blocking the logging call site.
         tokio::spawn(async move {
             match event_clone.trigger(params).await {
                 Ok(_) => { /* Successfully triggered log event */ }
                 Err(e) => {
-                    // Log errors from triggering to stderr, as we can't use the logger itself here
-                    // to avoid potential infinite loops.
                     eprintln!(
                         "Error triggering log_entry event for AssetManager: {:?}. Original log: [{}] {}",
                         e, record.level(), record.args()
@@ -58,7 +78,11 @@ impl log::Log for RustLoggingHandler {
         });
     }
 
+    /// Flushes any buffered log records.
+    ///
+    /// This implementation is a no-op, as log messages are sent asynchronously
+    /// via MQTT events without intermediate buffering within this handler.
     fn flush(&self) {
-        // No-op, as our logging is fire-and-forget via MQTT events.
+        // No-op
     }
 }
