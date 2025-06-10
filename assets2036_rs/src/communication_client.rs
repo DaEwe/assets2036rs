@@ -59,6 +59,11 @@ pub trait CommunicationClient: Send + Sync + fmt::Debug + 'static {
         namespace: &str,
         asset_name: &str,
     ) -> Result<HashMap<String, Value>, Error>;
+    async fn query_asset_children(
+        &self,
+        parent_namespace: &str,
+        parent_asset_name: &str,
+    ) -> Result<Vec<crate::ChildAssetInfo>, Error>;
 }
 
 pub struct MqttCommunicationClient {
@@ -139,26 +144,46 @@ impl CommunicationClient for MqttCommunicationClient {
         &self,
         host: &str,
         port: u16,
-        _namespace: &str,
+        _namespace: &str, // namespace and endpoint_name are used for client_id generation in new()
         _endpoint_name: &str,
     ) -> Result<(), Error> {
         let mut client_handle_guard = self.client_handle.write().await;
         let mut task_guard = self.event_loop_task.write().await;
+
         if client_handle_guard.is_some() || task_guard.is_some() {
             log::warn!("Already connected or event loop task running.");
             return Ok(());
         }
-        let mut current_connect_options =
-            MqttOptions::new(self.mqtt_options.client_id(), host, port);
-        current_connect_options.set_keep_alive(self.mqtt_options.keep_alive());
+
+        // Note: MqttOptions are already configured in new().
+        // Re-creating or altering them here for host/port might be redundant if new() sets them correctly.
+        // Assuming self.mqtt_options is the source of truth for connection params.
+        // However, rumqttc::AsyncClient::new needs them directly.
+        // Let's ensure host and port from args are used for this specific connection attempt.
+        let mut connection_options = self.mqtt_options.clone();
+        connection_options.set_broker_addr(format!("{}:{}", host, port));
+
+
+        // Attempt to establish the connection
         let (new_async_client, mut event_loop) =
-            rumqttc::AsyncClient::new(current_connect_options, 100);
+            match rumqttc::AsyncClient::new(connection_options.clone(), 100) {
+                Ok(client_tuple) => client_tuple,
+                Err(e) => {
+                    return Err(Error::ConnectionError {
+                        host: host.to_string(),
+                        port,
+                        details: format!("Failed to create AsyncClient: {}", e),
+                    });
+                }
+            };
+
         *client_handle_guard = Some(new_async_client);
         log::info!(
             "MQTT client created. Attempting to connect to {}:{}",
             host,
             port
         );
+
         let req_map = self.request_map.clone();
         let op_bindings = self.operation_bindings.clone();
         let prop_subs = self.property_subscriptions.clone();
@@ -168,7 +193,14 @@ impl CommunicationClient for MqttCommunicationClient {
             loop {
                 match event_loop.poll().await {
                     Ok(MqttEvent::Incoming(Packet::ConnAck(ack))) => {
-                        log::info!("MQTT Connected: {:?}", ack);
+                        if ack.code == rumqttc::ConnectReturnCode::Success {
+                            log::info!("MQTT Connected: {:?}", ack.code);
+                        } else {
+                            log::error!("MQTT Connection failed: {:?}", ack.code);
+                            // This error occurs within the event loop, difficult to propagate to connect() caller directly.
+                            // For robust connect error handling, connect() might need to await this ack.
+                            // For now, logging and the loop continues/reconnects or client is dropped.
+                        }
                     }
                     Ok(MqttEvent::Incoming(Packet::Publish(publish_packet))) => {
                         let topic_clone = publish_packet.topic.clone();
@@ -190,8 +222,11 @@ impl CommunicationClient for MqttCommunicationClient {
                                 "Received request for bound operation on topic {}",
                                 topic_clone
                             );
-                            // TODO: Full logic for bound operation handling
-                            drop(op_bindings_guard);
+                            // TODO: Full logic for bound operation handling, including sending response
+                            // For now, just logging and continuing
+                            drop(op_bindings_guard); // release lock before potentially long callback
+                            // let result = op_callback(params_from_payload); // This needs payload parsing
+                            // Then publish result to reply_to topic from payload
                             continue;
                         }
                         drop(op_bindings_guard);
@@ -244,13 +279,19 @@ impl CommunicationClient for MqttCommunicationClient {
                     }
                     Ok(MqttEvent::Outgoing(_)) => { /* log::trace!("MQTT Outgoing"); */ }
                     Err(e) => {
-                        log::error!("MQTT Event loop error: {}", e);
+                        log::error!("MQTT Event loop error: {}. Attempting to handle.", e);
+                        // This error might indicate a disconnect or other critical issue.
+                        // Depending on the error, might need to signal wider system or attempt reconnect.
+                        // For now, just logging and sleeping.
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }
             }
         });
         *task_guard = Some(spawned_task);
+        // Note: True connection status depends on ConnAck in event_loop.
+        // This method completes before ConnAck is guaranteed. For robust connect,
+        // a mechanism to await ConnAck or a status check would be needed.
         Ok(())
     }
 
@@ -260,12 +301,23 @@ impl CommunicationClient for MqttCommunicationClient {
         if let Some(client) = client_handle_guard.take() {
             if let Err(e) = client.disconnect().await {
                 log::error!("MQTT client disconnect error: {}", e);
+                // Even if disconnect fails, proceed to abort task
+                // Return a communication error
+                if let Some(task) = task_guard.take() {
+                    task.abort();
+                    log::info!("MQTT event loop task signalled to abort due to disconnect error.");
+                }
+                return Err(Error::CommunicationError(format!(
+                    "MQTT client disconnect error: {}",
+                    e
+                )));
             } else {
-                log::info!("MQTT client disconnected.");
+                log::info!("MQTT client disconnected successfully.");
             }
         } else {
             log::warn!("Disconnect called but client was not present.");
         }
+
         if let Some(task) = task_guard.take() {
             task.abort();
             log::info!("MQTT event loop task signalled to abort.");
@@ -279,11 +331,19 @@ impl CommunicationClient for MqttCommunicationClient {
         let client_guard = self.client_handle.read().await;
         if let Some(client) = client_guard.as_ref() {
             client
-                .publish(topic, QoS::AtLeastOnce, retain, payload.into_bytes())
+                .publish(
+                    topic.clone(),
+                    QoS::AtLeastOnce,
+                    retain,
+                    payload.into_bytes(),
+                )
                 .await
-                .map_err(|e| Error::Other(format!("MQTT publish error: {}", e)))
+                .map_err(|e| Error::PublishFailed {
+                    topic,
+                    details: e.to_string(),
+                })
         } else {
-            Err(Error::Other("Not connected".to_string()))
+            Err(Error::CommunicationError("Not connected".to_string()))
         }
     }
 
@@ -297,14 +357,17 @@ impl CommunicationClient for MqttCommunicationClient {
             client
                 .subscribe(topic.clone(), QoS::AtLeastOnce)
                 .await
-                .map_err(|e| Error::Other(format!("MQTT subscribe error: {}", e)))?;
+                .map_err(|e| Error::SubscriptionFailed {
+                    topic: topic.clone(),
+                    details: e.to_string(),
+                })?;
             self.property_subscriptions
                 .write()
                 .await
                 .insert(topic, callback);
             Ok(())
         } else {
-            Err(Error::Other("Not connected".to_string()))
+            Err(Error::CommunicationError("Not connected".to_string()))
         }
     }
 
@@ -313,11 +376,17 @@ impl CommunicationClient for MqttCommunicationClient {
         let client_guard = self.client_handle.read().await;
         if let Some(client) = client_guard.as_ref() {
             client.unsubscribe(topic).await.map_err(|e| {
-                Error::Other(format!("MQTT unsubscribe error for topic {}: {}", topic, e))
+                Error::CommunicationError(format!(
+                    "MQTT unsubscribe error for topic {}: {}",
+                    topic, e
+                ))
             })?;
         } else {
+            // Not an error if not connected, just can't send unsubscribe to broker.
             log::warn!("Attempted to unsubscribe from broker while not connected (topic: {}). Will only clear local callbacks.", topic);
         }
+
+        // Always remove local subscriptions regardless of connection state
         if self
             .property_subscriptions
             .write()
@@ -352,14 +421,17 @@ impl CommunicationClient for MqttCommunicationClient {
             client
                 .subscribe(topic.clone(), QoS::AtLeastOnce)
                 .await
-                .map_err(|e| Error::Other(format!("MQTT subscribe error: {}", e)))?;
+                .map_err(|e| Error::SubscriptionFailed {
+                    topic: topic.clone(),
+                    details: e.to_string(),
+                })?;
             self.event_subscriptions
                 .write()
                 .await
                 .insert(topic, callback);
             Ok(())
         } else {
-            Err(Error::Other("Not connected".to_string()))
+            Err(Error::CommunicationError("Not connected".to_string()))
         }
     }
 
@@ -381,39 +453,42 @@ impl CommunicationClient for MqttCommunicationClient {
         timeout_ms: u64,
     ) -> Result<Value, Error> {
         let client_guard = self.client_handle.read().await;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| Error::Other("Not connected".to_string()))?;
+        let client = client_guard.as_ref().ok_or_else(|| {
+            Error::CommunicationError("Not connected".to_string())
+        })?;
+
         let request_id = uuid::Uuid::new_v4().to_string();
         let request_publish_topic = format!("{}/request", operation_topic);
         let reply_to_topic = format!("{}/{}", self.client_response_base_topic, request_id);
+
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.request_map
             .write()
             .await
             .insert(reply_to_topic.clone(), tx);
 
-        let topic_for_subscribe_and_error = reply_to_topic.clone();
+        // Subscribe to the reply topic
         client
-            .subscribe(topic_for_subscribe_and_error.clone(), QoS::AtLeastOnce)
+            .subscribe(reply_to_topic.clone(), QoS::AtLeastOnce)
             .await
             .map_err(|e| {
-                let map_clone = self.request_map.clone();
-                let topic_for_remove_in_error = topic_for_subscribe_and_error.clone();
+                // Cleanup request_map if subscribe fails
+                let reply_topic_clone = reply_to_topic.clone();
+                let req_map_clone = self.request_map.clone();
                 tokio::spawn(async move {
-                    map_clone.write().await.remove(&topic_for_remove_in_error);
+                    req_map_clone.write().await.remove(&reply_topic_clone);
                 });
-                Error::Other(format!(
-                    "Failed to subscribe to response topic {}: {}",
-                    topic_for_subscribe_and_error, e
-                ))
+                Error::SubscriptionFailed {
+                    topic: reply_to_topic.clone(),
+                    details: e.to_string(),
+                }
             })?;
 
         let req_payload_json =
             serde_json::json!({"params": params, "reply_to": reply_to_topic.clone()});
-        let req_payload_str = serde_json::to_string(&req_payload_json)?;
+        let req_payload_str = serde_json::to_string(&req_payload_json)?; // Can return JsonError
 
-        let topic_for_publish_error_cleanup = reply_to_topic.clone();
+        // Publish the request
         client
             .publish(
                 request_publish_topic.clone(),
@@ -423,51 +498,63 @@ impl CommunicationClient for MqttCommunicationClient {
             )
             .await
             .map_err(|e| {
-                let map_clone = self.request_map.clone();
-                let topic_for_remove_in_publish_error = topic_for_publish_error_cleanup.clone();
+                // Cleanup request_map if publish fails
+                let reply_topic_clone = reply_to_topic.clone();
+                let req_map_clone = self.request_map.clone();
                 tokio::spawn(async move {
-                    map_clone
-                        .write()
-                        .await
-                        .remove(&topic_for_remove_in_publish_error);
+                    req_map_clone.write().await.remove(&reply_topic_clone);
                 });
-                Error::Other(format!(
-                    "Failed to publish op request to {}: {}",
-                    request_publish_topic, e
-                ))
+                Error::PublishFailed {
+                    topic: request_publish_topic.clone(),
+                    details: e.to_string(),
+                }
             })?;
+
         log::debug!(
             "Op invoked on {}, reply on {}",
             request_publish_topic,
             reply_to_topic
         );
+
+        // Wait for the response with timeout
         let result = match tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(_)) => Err(Error::Other(
-                "Op call failed: response channel error".to_string(),
-            )),
+            Ok(Ok(value)) => Ok(value), // Successfully received response
+            Ok(Err(_)) => {
+                // Sender was dropped, meaning response processing failed or channel closed prematurely
+                self.request_map.write().await.remove(&reply_to_topic); // Ensure cleanup
+                Err(Error::CommunicationError(
+                    "Operation call failed: response channel error before value received".to_string(),
+                ))
+            }
             Err(_) => {
-                self.request_map.write().await.remove(&reply_to_topic);
-                Err(Error::Other(format!(
-                    "Op call timed out for topic {} (response on {})",
-                    operation_topic, reply_to_topic
-                )))
+                // Timeout
+                self.request_map.write().await.remove(&reply_to_topic); // Ensure cleanup
+                Err(Error::OperationTimeoutError {
+                    operation: operation_topic.clone(),
+                    timeout_ms,
+                })
             }
         };
 
+        // Unsubscribe from the reply topic
+        // This should happen regardless of the outcome of the operation invocation if subscribe was successful
         if let Err(e) = client.unsubscribe(reply_to_topic.clone()).await {
             log::warn!(
-                "Failed to unsubscribe from response topic {}: {}",
+                "Failed to unsubscribe from response topic {}: {}. Potential for orphaned subscriptions.",
                 reply_to_topic,
                 e
             );
+            // Not returning this error as the primary error of the operation, but logging it is important.
         }
 
-        if result.is_ok()
-            || matches!(result, Err(Error::Other(ref s)) if s.contains("response channel error"))
-        {
+        // If result was Ok, or if it was a response channel error (meaning we got something or sender dropped),
+        // the entry in request_map should have been removed. This check is slightly redundant now with cleanup in error paths.
+        if result.is_ok() || matches!(result, Err(Error::CommunicationError(_))) {
+             // For OperationTimeoutError, it's already removed.
             self.request_map.write().await.remove(&reply_to_topic);
         }
+
+
         result
     }
 
@@ -477,19 +564,19 @@ impl CommunicationClient for MqttCommunicationClient {
         callback: Box<dyn Fn(Value) -> Result<Value, Error> + Send + Sync + 'static>,
     ) -> Result<(), Error> {
         let client_guard = self.client_handle.read().await;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| Error::Other("Not connected".to_string()))?;
+        let client = client_guard.as_ref().ok_or_else(|| {
+            Error::CommunicationError("Not connected".to_string())
+        })?;
+
         let request_topic = format!("{}/request", topic);
         client
             .subscribe(request_topic.clone(), QoS::AtLeastOnce)
             .await
-            .map_err(|e| {
-                Error::Other(format!(
-                    "Failed to subscribe to op request topic {}: {}",
-                    request_topic, e
-                ))
+            .map_err(|e| Error::SubscriptionFailed {
+                topic: request_topic.clone(),
+                details: e.to_string(),
             })?;
+
         self.operation_bindings
             .write()
             .await
@@ -508,7 +595,8 @@ impl CommunicationClient for MqttCommunicationClient {
         _submodel_names: &[&str],
     ) -> Result<Vec<String>, Error> {
         log::warn!("MqttCommunicationClient::query_asset_names is a placeholder and not fully implemented.");
-        Err(Error::Other(
+        // This should ideally perform a discovery mechanism, e.g., using retained messages or a discovery topic.
+        Err(Error::CommunicationError(
             "query_asset_names not implemented".to_string(),
         ))
     }
@@ -524,19 +612,22 @@ impl CommunicationClient for MqttCommunicationClient {
             asset_name,
             wildcard_topic
         );
+
         let collected_metas = Arc::new(TokioRwLock::new(HashMap::new()));
         let internal_callback_collected_metas = collected_metas.clone();
+
         let internal_callback = Box::new(move |topic: String, payload_str: String| {
             log::debug!(
                 "query_submodels_for_asset (callback): Received msg on topic: {}",
                 topic
             );
             let parts: Vec<&str> = topic.split('/').collect();
-            if parts.len() == 4 && parts[3] == "_meta" {
+            if parts.len() == 4 && parts[3] == "_meta" { // e.g. <namespace>/<asset_name>/<submodel_name>/_meta
                 let sm_name = parts[2].to_string();
                 match serde_json::from_str::<Value>(&payload_str) {
                     Ok(meta_value) => {
                         let metas_map_clone = internal_callback_collected_metas.clone();
+                        // Spawning a task to avoid blocking the MQTT event loop
                         tokio::spawn(async move {
                             metas_map_clone.write().await.insert(sm_name, meta_value);
                         });
@@ -546,43 +637,156 @@ impl CommunicationClient for MqttCommunicationClient {
                     }
                 }
             } else {
-                log::warn!("query_submodels_for_asset (callback): Msg on meta wildcard with unexpected topic: {}",topic);
+                log::warn!("query_submodels_for_asset (callback): Msg on meta wildcard with unexpected topic structure: {}",topic);
             }
         });
-        self.subscribe(wildcard_topic.clone(), internal_callback)
-            .await?;
-        log::debug!(
-            "query_submodels_for_asset: Subscribed to {}",
-            wildcard_topic
-        );
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        match self.unsubscribe(&wildcard_topic).await {
-            Ok(_) => log::debug!(
-                "query_submodels_for_asset: Unsubscribed from {}",
-                wildcard_topic
-            ),
-            Err(e) => log::error!(
-                "query_submodels_for_asset: Error during unsubscribe from {}: {}",
-                wildcard_topic,
-                e
-            ),
+
+        // Subscribe to the wildcard topic
+        self.subscribe(wildcard_topic.clone(), internal_callback).await?;
+        log::debug!("query_submodels_for_asset: Subscribed to {}", wildcard_topic);
+
+        // Wait for a period to collect responses. This is a common but somewhat fragile pattern for discovery.
+        // A more robust solution might involve a specific discovery protocol or awaiting a known number of responses if possible.
+        tokio::time::sleep(Duration::from_millis(1500)).await; // TODO: Make timeout configurable or use a better discovery mechanism
+
+        // Unsubscribe from the wildcard topic
+        if let Err(e) = self.unsubscribe(&wildcard_topic).await {
+            log::error!(
+                "query_submodels_for_asset: Error during unsubscribe from {}: {}. Proceeding with collected data.",
+                wildcard_topic, e
+            );
+            // Don't return error here, try to return what was collected.
+        } else {
+            log::debug!("query_submodels_for_asset: Unsubscribed from {}", wildcard_topic);
         }
+
         let final_metas = collected_metas.read().await.clone();
         if final_metas.is_empty() {
+            // This might not be an error condition always, could be a valid state.
+            // Using DiscoveryNoData to indicate that query executed but found nothing.
             log::warn!(
-                "query_submodels_for_asset: No submodels found for asset '{}/{}' on topic '{}'",
-                namespace,
-                asset_name,
-                wildcard_topic
+                "query_submodels_for_asset: No submodels found for asset '{}/{}' on topic '{}'. This might be expected or indicate an issue.",
+                namespace, asset_name, wildcard_topic
             );
+             return Err(Error::DiscoveryNoData(format!("asset '{}/{}'", namespace, asset_name)));
         } else {
             log::info!(
                 "query_submodels_for_asset: Collected {} submodel(s) for asset '{}/{}'",
-                final_metas.len(),
-                namespace,
-                asset_name
+                final_metas.len(), namespace, asset_name
             );
         }
         Ok(final_metas)
+    }
+
+    async fn query_asset_children(
+        &self,
+        parent_namespace: &str,
+        parent_asset_name: &str,
+    ) -> Result<Vec<crate::ChildAssetInfo>, Error> {
+        let discovery_topic = "+/+/_relations/belongs_to";
+        log::info!(
+            "Querying child assets for '{}/{}' using wildcard topic: {}",
+            parent_namespace,
+            parent_asset_name,
+            discovery_topic
+        );
+
+        let collected_children = Arc::new(TokioRwLock::new(Vec::new()));
+        let internal_callback_collected_children = collected_children.clone();
+
+        let expected_parent_ns = parent_namespace.to_string();
+        let expected_parent_name = parent_asset_name.to_string();
+
+        let internal_callback = Box::new(move |topic: String, payload_str: String| {
+            log::debug!(
+                "query_asset_children (callback): Received msg on topic: {}",
+                topic
+            );
+            match serde_json::from_str::<Value>(&payload_str) {
+                Ok(payload_value) => {
+                    if let (Some(ns_val), Some(name_val)) = (
+                        payload_value.get("namespace"),
+                        payload_value.get("asset_name"),
+                    ) {
+                        if let (Some(ns_str), Some(name_str)) =
+                            (ns_val.as_str(), name_val.as_str())
+                        {
+                            if ns_str == expected_parent_ns && name_str == expected_parent_name {
+                                // Payload matches the parent we are looking for.
+                                // Now extract child info from the topic: <child_ns>/<child_name>/_relations/belongs_to
+                                let parts: Vec<&str> = topic.split('/').collect();
+                                if parts.len() == 4
+                                    && parts[2] == "_relations"
+                                    && parts[3] == "belongs_to"
+                                {
+                                    let child_info = crate::ChildAssetInfo {
+                                        namespace: parts[0].to_string(),
+                                        name: parts[1].to_string(),
+                                    };
+                                    log::debug!("Found child asset: {:?}", child_info);
+                                    let children_clone =
+                                        internal_callback_collected_children.clone();
+                                    tokio::spawn(async move {
+                                        children_clone.write().await.push(child_info);
+                                    });
+                                } else {
+                                    log::warn!("query_asset_children (callback): Topic '{}' matched parent but had unexpected structure.", topic);
+                                }
+                            }
+                        } else {
+                            log::debug!("query_asset_children (callback): Payload 'namespace' or 'asset_name' not strings for topic '{}'", topic);
+                        }
+                    } else {
+                        log::debug!("query_asset_children (callback): Payload missing 'namespace' or 'asset_name' for topic '{}'", topic);
+                    }
+                }
+                Err(e) => {
+                    log::error!("query_asset_children (callback): Failed to deserialize belongs_to payload for topic '{}'. Error: {}",topic, e);
+                }
+            }
+        });
+
+        self.subscribe(discovery_topic.to_string(), internal_callback)
+            .await?;
+        log::debug!(
+            "query_asset_children: Subscribed to {}",
+            discovery_topic
+        );
+
+        // TODO: Make timeout configurable. Using similar timeout as query_submodels_for_asset for now.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        if let Err(e) = self.unsubscribe(discovery_topic).await {
+            log::error!(
+                "query_asset_children: Error during unsubscribe from {}: {}. Proceeding with collected data.",
+                discovery_topic, e
+            );
+        } else {
+            log::debug!(
+                "query_asset_children: Unsubscribed from {}",
+                discovery_topic
+            );
+        }
+
+        let final_children = collected_children.read().await.clone();
+        if final_children.is_empty() {
+            log::warn!(
+                "query_asset_children: No children found for asset '{}/{}' on topic '{}'",
+                parent_namespace,
+                parent_asset_name,
+                discovery_topic
+            );
+            // It's not necessarily an error if no children are found.
+            // Depending on strictness, one might return Error::DiscoveryNoData here.
+            // For now, returning an empty Vec is consistent with finding "no data".
+        } else {
+            log::info!(
+                "query_asset_children: Collected {} child(ren) for asset '{}/{}'",
+                final_children.len(),
+                parent_namespace,
+                parent_asset_name
+            );
+        }
+        Ok(final_children)
     }
 }

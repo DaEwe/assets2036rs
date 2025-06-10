@@ -18,7 +18,7 @@ import logging
 import os
 import ssl
 from threading import Event, Thread
-from typing import Type
+from typing import Type, Union, Dict
 from urllib.request import urlopen
 
 from assets2036py import Asset, Mode, ProxyAsset
@@ -199,7 +199,7 @@ class AssetManager:
     def create_asset(
         self,
         name: str,
-        *sub_models: str,
+        *sub_models: Union[str, Dict],
         mode=Mode.OWNER,
         namespace: str = None,
         create_endpoint: bool = True,
