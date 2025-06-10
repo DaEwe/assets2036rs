@@ -2,7 +2,9 @@ import argparse
 import json
 import os
 import re
-from typing import List, Callable, Optional, NamedTuple, Any, Dict
+from typing import List, Callable, Optional, NamedTuple, Any, Dict # Keep existing typings
+import jsonschema
+from jinja2 import Environment, FileSystemLoader # Add Jinja2
 
 # --- Helper functions for name conversion ---
 def camel_to_snake(name):
@@ -21,7 +23,14 @@ def camel_to_pascal(name):
 _generated_classes_registry = set()
 
 # --- Helper function for type mapping ---
-def map_type_to_python(submodel_type, items_type=None, object_name_hint=None):
+# Expects type_desc to be a dictionary like: {"type": "string"} or {"type": "object", "host": {"type": "string"}, ...}
+def map_type_to_python(type_desc: Dict[str, Any], object_name_hint: Optional[str] = None) -> str:
+    if not isinstance(type_desc, dict):
+        print(f"Warning: Invalid type_desc passed to map_type_to_python: {type_desc}. Defaulting to 'Any'.")
+        return "Any"
+
+    submodel_type = type_desc.get('type')
+
     if submodel_type == "string":
         return "str"
     elif submodel_type == "integer":
@@ -31,21 +40,50 @@ def map_type_to_python(submodel_type, items_type=None, object_name_hint=None):
     elif submodel_type == "boolean":
         return "bool"
     elif submodel_type == "array":
-        item_py_type = map_type_to_python(items_type) if items_type else "Any"
+        items_desc = type_desc.get('items')
+        item_py_type = map_type_to_python(items_desc) if items_desc else "Any"
         return f"List[{item_py_type}]"
     elif submodel_type == "object":
-        # Try to use object_name_hint if provided and a class for it was registered
+        # Check if this object is a reference to a generated class or an inline definition
+        # For inline definitions, object_name_hint is crucial for class naming.
         if object_name_hint:
+            potential_class_name = camel_to_pascal(object_name_hint)
+            # Check if the object has its own properties defined inline, making it a specific class
+            # These are keys in type_desc other than 'type', 'description', 'items'.
+            inline_properties = {k: v for k, v in type_desc.items() if k not in ['type', 'description', 'items']}
+            if inline_properties and potential_class_name in _generated_classes_registry:
+                return potential_class_name
+        return "Dict[str, Any]" # Fallback for generic objects or if class not found/defined
+    elif not submodel_type:
+        # This case might occur if type_desc is something like {"$ref": "..."} which is not yet supported
+        # Or if it's an object type description that omits the "type": "object" pair,
+        # which can be valid if properties are listed directly.
+        # For now, if 'type' is missing, but other keys (potential properties) exist, assume object.
+        # This is a heuristic and might need refinement based on actual schema usage.
+        if len(type_desc.keys()) > 0 and object_name_hint: # It has keys, could be an implicit object
             potential_class_name = camel_to_pascal(object_name_hint)
             if potential_class_name in _generated_classes_registry:
                 return potential_class_name
-        return "Dict[str, Any]" # Fallback
+            # It could also be a direct reference to a simple type if schema allows, but our current schema does not.
+            # For now, fallback to Dict if it seems like an object without a pre-registered class.
+            # This part is tricky because 'type_desc' could be a property definition itself if 'type' is missing.
+            # Example: "configuration": { "host": {"type": "string"}, "port": {"type": "integer"} }
+            # In this case, 'configuration' is the object_name_hint.
+            # The `generate_code` function must ensure Configuration is in `_generated_classes_registry` *before* this is called for the type.
+            # This map_type_to_python is called when processing the *main* properties list, and also for sub-properties.
+            # If an object_name_hint-based class is registered, it should be used.
+            # Otherwise, it's a generic dictionary.
+            # The pre-registration of nested classes in generate_code is key.
+            print(f"Warning: Submodel type key 'type' is missing in type_desc for '{object_name_hint}': {type_desc}. Assuming generic Dict or registered class if hint matches.")
+            return "Dict[str, Any]" # Fallback, safer than "Any" if it has structure
+
     elif submodel_type not in ["string", "integer", "number", "boolean", "array", "object"]:
-        print(f"Warning: Unknown submodel type '{submodel_type}' encountered. Defaulting to 'Any'.")
-    return "Any" # Default fallback
+        print(f"Warning: Unknown submodel_type '{submodel_type}' in type_desc for '{object_name_hint}': {type_desc}. Defaulting to 'Any'.")
+
+    return "Any" # Default fallback for unhandled cases
 
 # --- Helper function for default values ---
-def get_default_value_for_type(py_type_str):
+def get_default_value_for_type(py_type_str: str) -> str:
     if py_type_str == "str": return "\"\""
     if py_type_str == "int": return "0"
     if py_type_str == "float": return "0.0"
@@ -64,208 +102,165 @@ def generate_code(submodel_data, role, output_dir):
         print("Error: Submodel data is empty.")
         return
 
-    submodel_id = submodel_data.get('id')
-    if not submodel_id:
-        print("Error: Submodel definition must contain an 'id'.")
+    # Schema validation now guarantees 'name' exists.
+    submodel_name_pascal = camel_to_pascal(submodel_data['name'])
+    # The 'id' is optional according to schema, but we might still want it for SUBMODEL_ID if present.
+    # For now, the schema doesn't define 'id' or 'idShort' at the top level.
+    # We'll use a fixed string or derive from filename if needed, or remove SUBMODEL_ID class var.
+    # For this iteration, let's remove the SUBMODEL_ID class variable as it's not in the new schema.
+    # submodel_id = submodel_data.get('id', f"urn:generated:{submodel_name_pascal}")
+
+    # --- Initialize Jinja2 Environment ---
+    env = Environment(loader=FileSystemLoader("templates"), trim_blocks=False, lstrip_blocks=False)
+
+    # --- Prepare data for Jinja2 context ---
+    submodel_name = submodel_data['name'] # Schema validation guarantees 'name'
+    submodel_revision = submodel_data.get('revision', "N/A") # Revision is optional in schema
+
+    context = {
+        "submodel_name": submodel_name,
+        "submodel_revision": submodel_revision,
+        "submodel_class_name": f"{submodel_name_pascal}{role.capitalize()}",
+        "properties": [],
+        "operations": [],
+        "events": [],
+        "nested_classes": [],
+        "event_payloads": [],
+        "operation_responses": []
+    }
+
+    # 1. Process and Register Nested Classes from Properties
+    for prop_name, prop_details in submodel_data.get('properties', {}).items():
+        if not isinstance(prop_details, dict): continue
+        if prop_details.get('type') == 'object':
+            sub_properties_desc = {k: v for k, v in prop_details.items() if k not in ['type', 'description', 'items']}
+            if sub_properties_desc:
+                nested_class_name_pascal = camel_to_pascal(prop_name)
+                if not nested_class_name_pascal or nested_class_name_pascal == "Unnamed": continue
+
+                _generated_classes_registry.add(nested_class_name_pascal)
+                class_def = {"name": nested_class_name_pascal, "properties": []}
+                for sub_name, sub_details in sub_properties_desc.items():
+                    sub_name_snake = camel_to_snake(sub_name)
+                    sub_py_type = map_type_to_python(sub_details, object_name_hint=sub_name)
+                    class_def["properties"].append({
+                        "name_snake": sub_name_snake,
+                        "type_py": sub_py_type,
+                        "default_value": get_default_value_for_type(sub_py_type)
+                    })
+                context["nested_classes"].append(class_def)
+
+    # 2. Process and Register Event Payloads (as NamedTuples)
+    for event_name, event_details in submodel_data.get('events', {}).items():
+        event_params_desc = event_details.get('parameters', {})
+        if event_params_desc:
+            payload_name_pascal = f"{camel_to_pascal(event_name)}Payload"
+            _generated_classes_registry.add(payload_name_pascal)
+            payload_def = {"name": payload_name_pascal, "params": []}
+            for param_name, param_details in event_params_desc.items():
+                payload_def["params"].append({
+                    "name_snake": camel_to_snake(param_name),
+                    "type_py": map_type_to_python(param_details, object_name_hint=param_name)
+                })
+            context["event_payloads"].append(payload_def)
+
+    # 3. Process and Register complex Operation Responses (as NamedTuples)
+    for op_name, op_details in submodel_data.get('operations', {}).items():
+        response_desc = op_details.get('response')
+        if response_desc and response_desc.get('type') == 'object':
+            response_sub_props = {k:v for k,v in response_desc.items() if k not in ['type', 'description', 'items']}
+            if response_sub_props:
+                response_name_pascal = f"{camel_to_pascal(op_name)}Response"
+                _generated_classes_registry.add(response_name_pascal)
+                response_def = {"name": response_name_pascal, "params": [], "is_complex_object": True}
+                for param_name, param_details in response_sub_props.items():
+                    response_def["params"].append({
+                        "name_snake": camel_to_snake(param_name),
+                        "type_py": map_type_to_python(param_details, object_name_hint=param_name)
+                    })
+                context["operation_responses"].append(response_def)
+
+    # --- Populate context for main class properties ---
+    for prop_name, prop_details in submodel_data.get('properties', {}).items():
+        prop_name_snake = camel_to_snake(prop_name)
+        if not prop_name_snake: continue
+        py_type = map_type_to_python(prop_details, object_name_hint=prop_name)
+        context["properties"].append({
+            "name_snake": prop_name_snake,
+            "type_py": py_type,
+            "default_value": get_default_value_for_type(py_type)
+        })
+
+    # --- Populate context for operations ---
+    for op_name, op_details in submodel_data.get('operations', {}).items():
+        op_name_snake = camel_to_snake(op_name)
+        if not op_name_snake: continue
+        operation_ctx = {
+            "name": op_name,
+            "name_snake": op_name_snake,
+            "params": [],
+            "return_type": "None",
+            "return_default_value": "None"
+        }
+        for param_name, param_details in op_details.get('parameters', {}).items():
+            operation_ctx["params"].append({
+                "name_snake": camel_to_snake(param_name),
+                "type_py": map_type_to_python(param_details, object_name_hint=param_name)
+            })
+
+        response_desc = op_details.get('response')
+        if response_desc:
+            return_object_hint = f"{camel_to_pascal(op_name)}Response"
+            operation_ctx["return_type"] = map_type_to_python(response_desc, object_name_hint=return_object_hint)
+            operation_ctx["return_default_value"] = get_default_value_for_type(operation_ctx["return_type"])
+        context["operations"].append(operation_ctx)
+
+    # --- Populate context for events ---
+    for event_name, event_details in submodel_data.get('events', {}).items():
+        event_name_snake = camel_to_snake(event_name)
+        if not event_name_snake: continue
+
+        payload_name_pascal = f"{camel_to_pascal(event_name)}Payload"
+        actual_payload_type = "None" # Default if no params
+        if event_details.get('parameters'):
+            actual_payload_type = payload_name_pascal if payload_name_pascal in _generated_classes_registry else "Dict[str, Any]"
+
+        event_ctx = {
+            "name": event_name,
+            "name_snake": event_name_snake,
+            "payload_type": actual_payload_type,
+            "trigger_params": []
+        }
+        if actual_payload_type == payload_name_pascal :
+            for param_name, param_details in event_details.get('parameters', {}).items():
+                event_ctx["trigger_params"].append({
+                    "name_snake": camel_to_snake(param_name),
+                    "type_py": map_type_to_python(param_details, object_name_hint=param_name)
+                })
+        context["events"].append(event_ctx)
+
+    # --- Render the template ---
+    template_name = f"{role}.py.j2"
+    try:
+        template = env.get_template(template_name)
+        generated_code_str = template.render(context)
+    except Exception as e:
+        print(f"Error rendering Jinja2 template {template_name}: {e}")
+        # Consider printing context for debugging: print(json.dumps(context, indent=2))
         return
 
-    submodel_name_from_data = submodel_data.get('name', submodel_data.get('idShort'))
-    if not submodel_name_from_data:
-        derived_name = submodel_id.split(':')[-1] if ':' in submodel_id else submodel_id
-        submodel_name_from_data = derived_name
-        print(f"Warning: Submodel 'name' or 'idShort' not found. Using derived name '{derived_name}' from 'id'.")
-
-    submodel_name_pascal = camel_to_pascal(submodel_name_from_data)
-    if not submodel_name_pascal or submodel_name_pascal == "Unnamed" or submodel_name_pascal == "GeneratedSubmodel": # Check against camel_to_pascal's default for empty
-        # Attempt to create a more generic name if derivation failed badly
-        generic_name_base = submodel_id.replace(':','_').replace('/','_') # Sanitize id for use as class name base
-        submodel_name_pascal = camel_to_pascal(generic_name_base)
-        if not submodel_name_pascal or submodel_name_pascal == "Unnamed": # if still bad
-             submodel_name_pascal = "DefaultGeneratedSubmodelName" # Absolute fallback
-        print(f"Warning: Could not derive a good submodel name. Using '{submodel_name_pascal}'.")
-
-
+    # --- Write to file ---
     output_filename_base = camel_to_snake(submodel_name_pascal)
-    if not output_filename_base: output_filename_base = "default_generated_submodel_name" # Ensure filename is valid
+    if not output_filename_base: output_filename_base = "default_generated_submodel_name"
     output_filename = f"{output_filename_base}_{role}.py"
     output_filepath = os.path.join(output_dir, output_filename)
-
     os.makedirs(output_dir, exist_ok=True)
-
-    code_lines = [
-        "from typing import List, Callable, Optional, NamedTuple, Any, Dict",
-        "import abc",
-        "",
-    ]
-
-    # --- Generate nested object classes (from properties) ---
-    for prop_spec in submodel_data.get('properties', []):
-        if prop_spec.get('type') == 'object' and prop_spec.get('properties'):
-            # Use the property name as the basis for the nested class name
-            nested_class_name = camel_to_pascal(prop_spec['name'])
-            if not nested_class_name: continue # Skip if name is invalid
-
-            _generated_classes_registry.add(nested_class_name)
-            code_lines.append(f"class {nested_class_name}:")
-            if not prop_spec['properties']:
-                code_lines.append("    pass # No sub-properties defined")
-            else:
-                constructor_params = []
-                constructor_body = []
-                for sub_prop in prop_spec['properties']:
-                    sub_prop_name_snake = camel_to_snake(sub_prop['name'])
-                    sub_prop_type_py = map_type_to_python(sub_prop['type'], sub_prop.get('items', {}).get('type'))
-                    default_val = get_default_value_for_type(sub_prop_type_py)
-                    constructor_params.append(f"{sub_prop_name_snake}: {sub_prop_type_py} = {default_val}")
-                    constructor_body.append(f"        self.{sub_prop_name_snake} = {sub_prop_name_snake}")
-
-                code_lines.append(f"    def __init__(self, {', '.join(constructor_params)}):")
-                if constructor_body:
-                    code_lines.extend(constructor_body)
-                else:
-                    code_lines.append("        pass")
-
-            code_lines.append("")
-
-
-    # --- Generate NamedTuple for event payloads ---
-    for event in submodel_data.get('events', []):
-        if event.get('payload') and event['payload'].get('type') == 'object' and event['payload'].get('properties'):
-            event_name_pascal = camel_to_pascal(event['name'])
-            payload_class_name = f"{event_name_pascal}Payload"
-            _generated_classes_registry.add(payload_class_name)
-            code_lines.append(f"class {payload_class_name}(NamedTuple):")
-            for prop in event['payload']['properties']:
-                prop_name_snake = camel_to_snake(prop['name'])
-                prop_type_py = map_type_to_python(prop['type'], prop.get('items', {}).get('type'))
-                code_lines.append(f"    {prop_name_snake}: {prop_type_py}")
-            code_lines.append("")
-
-    # --- Main Submodel Class ---
-    class_name = f"{submodel_name_pascal}{role.capitalize()}"
-    code_lines.append(f"class {class_name}:")
-    code_lines.append(f"    SUBMODEL_ID = \"{submodel_id}\"")
-    code_lines.append("")
-    code_lines.append("    def __init__(self):")
-
-    if not submodel_data.get('properties'):
-        code_lines.append("        pass # No properties to initialize")
-    else:
-        for prop in submodel_data.get('properties', []):
-            prop_name_snake = camel_to_snake(prop['name'])
-            if not prop_name_snake: continue # Skip if name is invalid
-
-            prop_type = prop['type']
-            py_type = map_type_to_python(prop_type,
-                                         prop.get('items', {}).get('type') if prop_type == 'array' else None,
-                                         prop.get('name') if prop_type == 'object' else None) # Pass name hint for objects
-
-            default_value = get_default_value_for_type(py_type)
-            code_lines.append(f"        self.{prop_name_snake}: {py_type} = {default_value}")
-    code_lines.append("")
-
-    # Methods generation
-    if role == 'consumer':
-        for method in submodel_data.get('methods', []):
-            method_name_snake = camel_to_snake(method['name'])
-            if not method_name_snake: continue
-
-            params = []
-            for inp in method.get('inputs', []):
-                param_name_snake = camel_to_snake(inp['name'])
-                param_type_py = map_type_to_python(inp['type'], inp.get('items', {}).get('type'))
-                params.append(f"{param_name_snake}: {param_type_py}")
-
-            return_type = "None"
-            if method.get('outputs'):
-                # Assuming single output or first one for simplicity
-                first_output = method['outputs'][0]
-                return_type = map_type_to_python(first_output['type'], first_output.get('items', {}).get('type'))
-
-            code_lines.append(f"    async def call_{method_name_snake}(self, {', '.join(params) if params else ''}) -> {return_type}:")
-            code_lines.append(f"        # TODO: Implement actual call to provider for '{method['name']}'")
-            code_lines.append(f"        print(f\"Consumer: Calling method '{method['name']}'\")")
-            if return_type != "None":
-                 code_lines.append(f"        return {get_default_value_for_type(return_type)} # Placeholder return")
-            else:
-                code_lines.append("        pass")
-            code_lines.append("")
-
-    elif role == 'provider':
-        for method in submodel_data.get('methods', []):
-            method_name_snake = camel_to_snake(method['name'])
-            if not method_name_snake: continue
-
-            params = []
-            for inp in method.get('inputs', []):
-                param_name_snake = camel_to_snake(inp['name'])
-                param_type_py = map_type_to_python(inp['type'], inp.get('items', {}).get('type'))
-                params.append(f"{param_name_snake}: {param_type_py}")
-
-            return_type = "None"
-            if method.get('outputs'):
-                first_output = method['outputs'][0]
-                return_type = map_type_to_python(first_output['type'], first_output.get('items', {}).get('type'))
-
-            code_lines.append(f"    def {method_name_snake}(self, {', '.join(params) if params else ''}) -> {return_type}:")
-            code_lines.append(f"        # TODO: Implement actual logic for method '{method['name']}'")
-            code_lines.append(f"        print(f\"Provider: Method '{method['name']}' called\")")
-            if return_type != "None":
-                 code_lines.append(f"        return {get_default_value_for_type(return_type)} # Placeholder return")
-            else:
-                code_lines.append("        pass")
-            code_lines.append("")
-
-    # Event handling generation
-    if role == 'consumer':
-        for event in submodel_data.get('events', []):
-            event_name_snake = camel_to_snake(event['name'])
-            if not event_name_snake: continue
-
-            event_name_pascal = camel_to_pascal(event['name'])
-            payload_class_name = f"{event_name_pascal}Payload"
-
-            callback_param_type = payload_class_name if payload_class_name in _generated_classes_registry else "Dict[str, Any]"
-
-            code_lines.append(f"    def on_{event_name_snake}(self, callback: Callable[[{callback_param_type}], None]) -> None:")
-            code_lines.append(f"        # TODO: Implement event callback registration for '{event['name']}'")
-            code_lines.append(f"        print(f\"Consumer: Registering callback for event '{event['name']}'\")")
-            code_lines.append("        pass")
-            code_lines.append("")
-
-    elif role == 'provider':
-        for event in submodel_data.get('events', []):
-            event_name_snake = camel_to_snake(event['name'])
-            if not event_name_snake: continue
-
-            event_name_pascal = camel_to_pascal(event['name'])
-            payload_class_name = f"{event_name_pascal}Payload"
-
-            params = []
-            param_names_for_payload_constructor = []
-            if event.get('payload') and event['payload'].get('type') == 'object' and event['payload'].get('properties'):
-                 for prop in event['payload']['properties']:
-                    param_name_snake = camel_to_snake(prop['name'])
-                    param_type_py = map_type_to_python(prop['type'], prop.get('items', {}).get('type'))
-                    params.append(f"{param_name_snake}: {param_type_py}")
-                    param_names_for_payload_constructor.append(f"{param_name_snake}={param_name_snake}")
-
-            code_lines.append(f"    def trigger_{event_name_snake}(self, {', '.join(params) if params else ''}) -> None:")
-            code_lines.append(f"        # TODO: Implement actual event triggering for '{event['name']}'")
-            if payload_class_name in _generated_classes_registry and params:
-                payload_args_str = ", ".join(param_names_for_payload_constructor)
-                code_lines.append(f"        payload = {payload_class_name}({payload_args_str})")
-                code_lines.append(f"        print(f\"Provider: Triggering event '{event['name']}' with payload {{payload}}\")")
-            else:
-                code_lines.append(f"        print(f\"Provider: Triggering event '{event['name']}'\")")
-            code_lines.append("        pass")
-            code_lines.append("")
 
     try:
         with open(output_filepath, 'w') as f:
-            f.write("\n".join(code_lines))
-        print(f"Generated code for {role} at {output_filepath}")
-        print(f"Main class: {class_name}")
+            f.write(generated_code_str)
+        print(f"Generated code for {role} at {output_filepath} using Jinja2 template.")
+        print(f"Main class: {context['submodel_class_name']}")
     except IOError as e:
         print(f"Error: Could not write generated file to {output_filepath}. Details: {e}")
 
@@ -278,9 +273,25 @@ def main():
 
     args = parser.parse_args()
 
+    # --- Load the JSON Schema ---
+    schema_filepath = "assets2036py/resources/submodel_schema.json"
     try:
-        with open(args.submodel_file, 'r') as f:
-            submodel_data = json.load(f)
+        with open(schema_filepath, 'r') as f_schema:
+            submodel_json_schema = json.load(f_schema)
+    except FileNotFoundError:
+        print(f"Error: JSON Schema file not found at {schema_filepath}")
+        return
+    except json.JSONDecodeError:
+        print(f"Error: Could not decode JSON Schema from {schema_filepath}")
+        return
+    except Exception as e:
+        print(f"Error: An unexpected error occurred while loading the JSON schema: {e}")
+        return
+
+    # --- Load the Submodel Data File ---
+    try:
+        with open(args.submodel_file, 'r') as f_data:
+            submodel_data = json.load(f_data)
     except FileNotFoundError:
         print(f"Error: Submodel file not found at {args.submodel_file}")
         return
@@ -291,24 +302,28 @@ def main():
         print(f"Error: An unexpected error occurred while loading submodel file: {e}")
         return
 
-    # Check if submodel_data was successfully loaded and processed by initial checks in generate_code
-    # generate_code now returns None if there's an early exit due to bad data.
-    # However, the primary check for submodel_data being None (e.g. from file read issues) is already handled by `return` in main.
-    # The call to generate_code itself will handle internal validation.
-    # If generate_code had a return value indicating success/failure, we might check it here.
-    # For now, if file read failed, main exits. If generate_code fails internally, it prints errors and exits.
-    # A simple check like this could be redundant if generate_code always exits on its own errors.
-    # However, if generate_code could return None AND we want to stop `main` explicitly:
-    # result = generate_code(submodel_data, args.role, args.output_dir)
-    # if result is None: # Assuming generate_code returns None on handled error
-    #     print("Halting due to errors in submodel data processing reported by generate_code.")
-    #     return
-    # For this iteration, direct call is fine as generate_code handles its own errors/returns.
-    # And critical file errors already cause main to return.
+    # --- Validate Submodel Data against Schema ---
+    try:
+        validator = jsonschema.Draft7Validator(submodel_json_schema) # Or appropriate version
+        errors = sorted(validator.iter_errors(submodel_data), key=lambda e: e.path)
+        if errors:
+            print(f"Error: Submodel file '{args.submodel_file}' is not valid according to the schema '{schema_filepath}'.")
+            for error in errors:
+                print(f"- Validation Error: {'/'.join(map(str, error.path))} - {error.message}")
+            # Optionally print more details from `error` if needed
+            return # Exit if validation fails
+        else:
+            print(f"Submodel file '{args.submodel_file}' successfully validated against the schema.")
 
+    except jsonschema.exceptions.SchemaError as e:
+        print(f"Error: The JSON schema '{schema_filepath}' itself is invalid. Details: {e}")
+        return
+    except Exception as e: # Catch other potential jsonschema related errors
+        print(f"Error: An unexpected error occurred during schema validation: {e}")
+        return
+
+    # If validation passes, proceed to generate_code
     generate_code(submodel_data, args.role, args.output_dir)
-    # No explicit check like `if not submodel_data:` is needed here if generate_code handles its own print and return for bad data.
-    # The `return` statements in the try-except block for file loading already prevent generate_code from being called with invalid submodel_data.
 
 if __name__ == '__main__':
     main()

@@ -1,0 +1,30 @@
+{% extends "base.py.j2" %}
+
+{% block methods %}
+    {% for op in operations %}
+    def {{ op.name_snake }}(self{% for param in op.params %}, {{ param.name_snake }}: {{ param.type_py }}{% endfor %}) -> {{ op.return_type }}:
+        # TODO: Implement actual logic for operation '{{ op.name }}'
+        print(f"Provider: Operation '{{ op.name }}' called")
+        {% if op.return_type != "None" %}
+        return {{ op.return_default_value }}  # Placeholder
+        {% else %}
+        pass
+        {% endif %}
+
+    {% endfor %}
+    {% for event in events %}
+    def trigger_{{ event.name_snake }}(self{% for param in event.trigger_params %}, {{ param.name_snake }}: {{ param.type_py }}{% endfor %}) -> None:
+        # TODO: Implement actual event triggering for '{{ event.name }}'
+        {% if event.payload_type != "Dict[str, Any]" and event.payload_type != "None" and event.trigger_params %}
+        payload = {{ event.payload_type }}({% for p in event.trigger_params %}{{p.name_snake}}={{p.name_snake}}{% if not loop.last %}, {% endif %}{% endfor %})
+        print(f"Provider: Triggering event '{{ event.name }}' with payload {{ payload }}")
+        {% elif event.payload_type == "None" and not event.trigger_params %}
+        print(f"Provider: Triggering event '{{ event.name }}' (no payload)")
+        {% else %}
+        # This case handles Dict[str, Any] or if params are present but not forming a specific payload type
+        print(f"Provider: Triggering event '{{ event.name }}'{% if event.trigger_params %} with parameters{% endif %}")
+        {% endif %}
+        pass
+
+    {% endfor %}
+{% endblock methods %}

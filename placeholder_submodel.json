@@ -1,90 +1,89 @@
 {
-  "id": "urn:example:submodel:placeholder",
   "name": "PlaceholderSubmodel",
-  "description": "A placeholder submodel for testing code generation.",
-  "properties": [
-    {
-      "name": "status",
+  "revision": "1.0.0",
+  "properties": {
+    "status": {
       "type": "string",
       "description": "The current status of the asset."
     },
-    {
-      "name": "count",
+    "count": {
       "type": "integer",
       "description": "A counter value."
     },
-    {
-      "name": "isEnabled",
+    "isEnabled": {
       "type": "boolean",
       "description": "Indicates if the asset is enabled."
     },
-    {
-      "name": "measurements",
+    "measurements": {
       "type": "array",
+      "description": "A list of measurements.",
       "items": {
         "type": "number"
-      },
-      "description": "A list of measurements."
+      }
     },
-    {
-      "name": "configuration",
+    "configuration": {
       "type": "object",
-      "properties": [
-        {
-          "name": "host",
-          "type": "string"
+      "description": "Asset configuration parameters.",
+      "host": {
+        "type": "string",
+        "description": "Hostname of the asset."
+      },
+      "port": {
+        "type": "integer",
+        "description": "Port number for communication."
+      }
+    },
+    "complexNested": {
+        "type": "object",
+        "description": "A more complex nested object.",
+        "levelOne": {
+            "type": "object",
+            "description": "First level of nesting.",
+            "name": {"type": "string"},
+            "value": {"type": "number"}
         },
-        {
-          "name": "port",
-          "type": "integer"
-        }
-      ],
-      "description": "Asset configuration parameters."
+        "active": {"type": "boolean"}
     }
-  ],
-  "methods": [
-    {
-      "name": "start",
+  },
+  "events": {
+    "errorOccurred": {
+      "description": "Fired when an error occurs.",
+      "parameters": {
+        "errorCode": {
+          "type": "integer",
+          "description": "The code of the error."
+        },
+        "errorMessage": {
+          "type": "string",
+          "description": "A human-readable error message."
+        }
+      }
+    }
+  },
+  "operations": {
+    "start": {
       "description": "Starts the asset.",
-      "inputs": [
-        {
-          "name": "delay",
+      "parameters": {
+        "delay": {
           "type": "integer",
           "description": "Delay in seconds before starting."
         }
-      ],
-      "outputs": [
-        {
-          "name": "result",
-          "type": "string",
-          "description": "The result of the start operation."
-        }
-      ]
-    },
-    {
-      "name": "stop",
-      "description": "Stops the asset.",
-      "inputs": [],
-      "outputs": []
-    }
-  ],
-  "events": [
-    {
-      "name": "errorOccurred",
-      "description": "Fired when an error occurs.",
-      "payload": {
-        "type": "object",
-        "properties": [
-          {
-            "name": "errorCode",
-            "type": "integer"
-          },
-          {
-            "name": "errorMessage",
-            "type": "string"
-          }
-        ]
+      },
+      "response": {
+        "type": "string",
+        "description": "The result of the start operation."
       }
+    },
+    "stop": {
+      "description": "Stops the asset."
+    },
+    "get_config": {
+        "description": "Returns the current configuration object.",
+        "response": {
+            "type": "object",
+            "host": { "type": "string" },
+            "port": { "type": "integer" }
+        }
     }
-  ]
+  }
 }

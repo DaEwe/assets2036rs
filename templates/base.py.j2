@@ -1,0 +1,52 @@
+from typing import List, Callable, Optional, NamedTuple, Any, Dict
+import abc
+
+# --- Generated Nested Classes & NamedTuples ---
+{% for nested_class in nested_classes %}
+class {{ nested_class.name }}:
+    {% if nested_class.properties %}
+    def __init__(self, {% for prop_init_param in nested_class.properties %}{{ prop_init_param.name_snake }}: {{ prop_init_param.type_py }} = {{ prop_init_param.default_value }}{% if not loop.last %}, {% endif %}{% endfor %}):
+        {% for prop_assign in nested_class.properties %}
+        self.{{ prop_assign.name_snake }} = {{ prop_assign.name_snake }}
+        {% endfor %}
+    {% else %}
+    def __init__(self):
+        pass
+    {% endif %}
+
+{% endfor %}
+{% for event_payload in event_payloads %}
+class {{ event_payload.name }}(NamedTuple):
+    {% if event_payload.params -%}
+    {% for param in event_payload.params %}
+    {{ param.name_snake }}: {{ param.type_py }}
+    {% endfor %}
+    {%- else %}
+    pass
+    {%- endif %}
+
+{% endfor %}
+{% for op_response in operation_responses %}
+{# Only generate if it's a specific structure; simple types are handled directly #}
+{% if op_response.is_complex_object %}
+class {{ op_response.name }}(NamedTuple):
+    {% for param in op_response.params %}
+    {{ param.name_snake }}: {{ param.type_py }}
+    {% endfor %}
+{% endif %}
+{% endfor %}
+
+# --- Main Submodel Class ---
+class {{ submodel_class_name }}:
+    SUBMODEL_NAME = "{{ submodel_name }}"
+    SUBMODEL_REVISION = "{{ submodel_revision }}"
+
+    def __init__(self):
+        {% for prop in properties %}
+        self.{{ prop.name_snake }}: {{ prop.type_py }} = {{ prop.default_value }}
+        {% else %}
+        pass
+        {% endfor %}
+
+    {% block methods %}
+    {% endblock methods %}

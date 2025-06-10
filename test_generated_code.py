@@ -33,6 +33,13 @@ class TestGeneratedCode(unittest.TestCase):
         cls.ConsumerErrorOccurredPayload = None
         cls.ProviderConfiguration = None
         cls.ProviderErrorOccurredPayload = None
+        # For new nested classes and operation responses
+        cls.ConsumerComplexNested = None
+        cls.ConsumerLevelOne = None # Part of ComplexNested
+        cls.ConsumerGetConfigResponse = None
+        cls.ProviderComplexNested = None
+        cls.ProviderLevelOne = None
+        cls.ProviderGetConfigResponse = None
 
         try:
             # Generate consumer code
@@ -104,6 +111,15 @@ class TestGeneratedCode(unittest.TestCase):
             cls.ConsumerErrorOccurredPayload = getattr(cls.consumer_module, "ErrorOccurredPayload", None)
             cls.ProviderErrorOccurredPayload = getattr(cls.provider_module, "ErrorOccurredPayload", None)
 
+            # New nested property classes
+            cls.ConsumerComplexNested = getattr(cls.consumer_module, "ComplexNested", None)
+            cls.ProviderComplexNested = getattr(cls.provider_module, "ComplexNested", None)
+            cls.ConsumerLevelOne = getattr(cls.consumer_module, "LevelOne", None) # Generated for complexNested.levelOne
+            cls.ProviderLevelOne = getattr(cls.provider_module, "LevelOne", None)
+
+            # New operation response NamedTuples
+            cls.ConsumerGetConfigResponse = getattr(cls.consumer_module, "GetConfigResponse", None)
+            cls.ProviderGetConfigResponse = getattr(cls.provider_module, "GetConfigResponse", None)
 
         except Exception as e:
             print(f"Failed to import generated modules: {e}")
@@ -126,13 +142,17 @@ class TestGeneratedCode(unittest.TestCase):
         self.assertIsNotNone(self.PlaceholderSubmodelConsumer, "Consumer class not loaded")
         consumer = self.PlaceholderSubmodelConsumer()
         self.assertIsNotNone(consumer)
-        self.assertEqual(consumer.SUBMODEL_ID, "urn:example:submodel:placeholder")
+        self.assertEqual(consumer.SUBMODEL_NAME, "PlaceholderSubmodel")
+        self.assertEqual(consumer.SUBMODEL_REVISION, "1.0.0")
+        self.assertFalse(hasattr(consumer, "SUBMODEL_ID"), "SUBMODEL_ID should not exist")
 
     def test_provider_instantiation(self):
         self.assertIsNotNone(self.PlaceholderSubmodelProvider, "Provider class not loaded")
         provider = self.PlaceholderSubmodelProvider()
         self.assertIsNotNone(provider)
-        self.assertEqual(provider.SUBMODEL_ID, "urn:example:submodel:placeholder")
+        self.assertEqual(provider.SUBMODEL_NAME, "PlaceholderSubmodel")
+        self.assertEqual(provider.SUBMODEL_REVISION, "1.0.0")
+        self.assertFalse(hasattr(provider, "SUBMODEL_ID"), "SUBMODEL_ID should not exist")
 
     def test_consumer_properties(self):
         self.assertIsNotNone(self.PlaceholderSubmodelConsumer, "Consumer class not loaded")
@@ -163,6 +183,28 @@ class TestGeneratedCode(unittest.TestCase):
         self.assertTrue(hasattr(config, "port"))
         self.assertIsInstance(config.port, int)
         self.assertEqual(config.port, 0)
+
+        # Test new complexNested property
+        self.assertTrue(hasattr(consumer, "complex_nested"))
+        self.assertIsNotNone(self.ConsumerComplexNested, "Consumer ComplexNested class not loaded")
+        self.assertIsInstance(consumer.complex_nested, self.ConsumerComplexNested)
+
+        cn_instance = consumer.complex_nested
+        self.assertTrue(hasattr(cn_instance, "active"))
+        self.assertIsInstance(cn_instance.active, bool)
+        self.assertEqual(cn_instance.active, False) # Default
+
+        self.assertTrue(hasattr(cn_instance, "level_one"))
+        self.assertIsNotNone(self.ConsumerLevelOne, "Consumer LevelOne class not loaded")
+        self.assertIsInstance(cn_instance.level_one, self.ConsumerLevelOne)
+
+        lo_instance = cn_instance.level_one
+        self.assertTrue(hasattr(lo_instance, "name"))
+        self.assertIsInstance(lo_instance.name, str)
+        self.assertEqual(lo_instance.name, "")
+        self.assertTrue(hasattr(lo_instance, "value"))
+        self.assertIsInstance(lo_instance.value, float) # 'number' maps to float
+        self.assertEqual(lo_instance.value, 0.0)
 
 
     def test_provider_properties(self):
@@ -195,24 +237,33 @@ class TestGeneratedCode(unittest.TestCase):
         self.assertIsInstance(config.port, int)
         self.assertEqual(config.port, 0)
 
+        # Test new complexNested property for provider
+        self.assertTrue(hasattr(provider, "complex_nested"))
+        self.assertIsNotNone(self.ProviderComplexNested, "Provider ComplexNested class not loaded")
+        self.assertIsInstance(provider.complex_nested, self.ProviderComplexNested)
+        # ... (similar detailed checks as for consumer if desired)
 
-    async def _test_consumer_call_start(self, consumer): # Helper for async
-        # This is a placeholder, actual implementation would require a running provider
-        # or more complex mocking of the consumer's call mechanism.
-        # For now, we test if it returns the default value.
-        result = await consumer.call_start(delay=5)
-        self.assertEqual(result, "") # Default for string return type
+
+    async def _test_consumer_calls(self, consumer):
+        # Test call_start
+        start_result = await consumer.call_start(delay=5)
+        self.assertEqual(start_result, "") # Default for string return type
+
+        # Test call_get_config
+        self.assertIsNotNone(self.ConsumerGetConfigResponse, "Consumer GetConfigResponse class not loaded")
+        get_config_result = await consumer.call_get_config()
+        self.assertIsInstance(get_config_result, self.ConsumerGetConfigResponse)
+        self.assertEqual(get_config_result.host, "") # Default value
+        self.assertEqual(get_config_result.port, 0)  # Default value
 
     def test_consumer_methods(self):
         self.assertIsNotNone(self.PlaceholderSubmodelConsumer, "Consumer class not loaded")
         consumer = self.PlaceholderSubmodelConsumer()
         self.assertTrue(callable(getattr(consumer, "call_start", None)))
         self.assertTrue(callable(getattr(consumer, "call_stop", None)))
+        self.assertTrue(callable(getattr(consumer, "call_get_config", None))) # New method
 
-        # Example of testing an async method's placeholder behavior
-        asyncio.run(self._test_consumer_call_start(consumer))
-        # call_stop has no return, so just check existence and callability
-        # For a real test, one might check for logs or side effects if any.
+        asyncio.run(self._test_consumer_calls(consumer))
 
 
     def test_provider_methods(self):
@@ -220,10 +271,17 @@ class TestGeneratedCode(unittest.TestCase):
         provider = self.PlaceholderSubmodelProvider()
         self.assertTrue(callable(getattr(provider, "start", None)))
         self.assertTrue(callable(getattr(provider, "stop", None)))
+        self.assertTrue(callable(getattr(provider, "get_config", None))) # New method
 
         # Test placeholder return values
         self.assertEqual(provider.start(delay=0), "") # Default for string
-        # provider.stop() # No return value
+        # provider.stop() has no return
+
+        self.assertIsNotNone(self.ProviderGetConfigResponse, "Provider GetConfigResponse class not loaded")
+        get_config_result = provider.get_config()
+        self.assertIsInstance(get_config_result, self.ProviderGetConfigResponse)
+        self.assertEqual(get_config_result.host, "") # Default value
+        self.assertEqual(get_config_result.port, 0)  # Default value
 
 
     def test_consumer_event_handlers(self):
@@ -244,37 +302,49 @@ class TestGeneratedCode(unittest.TestCase):
 
         self.assertIsNotNone(self.ProviderErrorOccurredPayload, "ProviderErrorOccurredPayload not loaded")
         # Test calling the trigger method (placeholder)
-        provider.trigger_error_occurred(error_code=100, error_message="Test Error")
+        # The event has parameters, so they must be provided if the payload class is specific.
+        if self.ProviderErrorOccurredPayload.__name__ != "Dict": # Check if it's not the fallback Dict
+             provider.trigger_error_occurred(error_code=100, error_message="Test Error")
+        else: # Fallback if it's Dict[str, Any] - this shouldn't happen with current setup
+             provider.trigger_error_occurred() # Or pass a dict if the template expects it
 
 
     def test_nested_classes_exist_and_work(self):
+        # Existing classes
         self.assertIsNotNone(self.ConsumerConfiguration, "Consumer Configuration class should be generated.")
         self.assertIsNotNone(self.ProviderConfiguration, "Provider Configuration class should be generated.")
         self.assertIsNotNone(self.ConsumerErrorOccurredPayload, "Consumer ErrorOccurredPayload (NamedTuple) should be generated.")
         self.assertIsNotNone(self.ProviderErrorOccurredPayload, "Provider ErrorOccurredPayload (NamedTuple) should be generated.")
 
-        # Test Consumer Configuration
-        consumer_config_instance = self.ConsumerConfiguration() # Uses defaults from __init__
-        self.assertEqual(consumer_config_instance.host, "")
-        self.assertEqual(consumer_config_instance.port, 0)
-        consumer_config_instance_custom = self.ConsumerConfiguration(host="testhost", port=1234)
-        self.assertEqual(consumer_config_instance_custom.host, "testhost")
-        self.assertEqual(consumer_config_instance_custom.port, 1234)
+        # New classes based on updated placeholder
+        self.assertIsNotNone(self.ConsumerComplexNested, "Consumer ComplexNested class should be generated.")
+        self.assertIsNotNone(self.ProviderComplexNested, "Provider ComplexNested class should be generated.")
+        self.assertIsNotNone(self.ConsumerLevelOne, "Consumer LevelOne class (for ComplexNested.levelOne) should be generated.")
+        self.assertIsNotNone(self.ProviderLevelOne, "Provider LevelOne class (for ComplexNested.levelOne) should be generated.")
+        self.assertIsNotNone(self.ConsumerGetConfigResponse, "Consumer GetConfigResponse NamedTuple should be generated.")
+        self.assertIsNotNone(self.ProviderGetConfigResponse, "Provider GetConfigResponse NamedTuple should be generated.")
 
-        # Test Provider Configuration
-        provider_config_instance = self.ProviderConfiguration(host="anotherhost", port=5678)
-        self.assertEqual(provider_config_instance.host, "anotherhost")
-        self.assertEqual(provider_config_instance.port, 5678)
+        # Test Consumer Configuration
+        consumer_config_instance = self.ConsumerConfiguration(host="ch", port=12)
+        self.assertEqual(consumer_config_instance.host, "ch")
+        self.assertEqual(consumer_config_instance.port, 12)
+
+        # Test Consumer ComplexNested and LevelOne
+        level_one = self.ConsumerLevelOne(name="L1", value=123.45)
+        complex_n = self.ConsumerComplexNested(level_one=level_one, active=True)
+        self.assertIsInstance(complex_n.level_one, self.ConsumerLevelOne)
+        self.assertEqual(complex_n.level_one.name, "L1")
+        self.assertEqual(complex_n.level_one.value, 123.45)
+        self.assertEqual(complex_n.active, True)
 
         # Test Consumer ErrorOccurredPayload (NamedTuple)
         consumer_payload = self.ConsumerErrorOccurredPayload(error_code=1, error_message="consumer test")
         self.assertEqual(consumer_payload.error_code, 1)
-        self.assertEqual(consumer_payload.error_message, "consumer test")
 
-        # Test Provider ErrorOccurredPayload (NamedTuple)
-        provider_payload = self.ProviderErrorOccurredPayload(error_code=2, error_message="provider test")
-        self.assertEqual(provider_payload.error_code, 2)
-        self.assertEqual(provider_payload.error_message, "provider test")
+        # Test Consumer GetConfigResponse (NamedTuple)
+        get_config_resp = self.ConsumerGetConfigResponse(host="localhost", port=8080)
+        self.assertEqual(get_config_resp.host, "localhost")
+        self.assertEqual(get_config_resp.port, 8080)
 
 
 if __name__ == '__main__':

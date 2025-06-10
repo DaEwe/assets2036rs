@@ -1,0 +1,22 @@
+{% extends "base.py.j2" %}
+
+{% block methods %}
+    {% for op in operations %}
+    async def call_{{ op.name_snake }}(self{% for param in op.params %}, {{ param.name_snake }}: {{ param.type_py }}{% endfor %}) -> {{ op.return_type }}:
+        # TODO: Implement actual call to provider for '{{ op.name }}'
+        print(f"Consumer: Calling operation '{{ op.name }}'")
+        {% if op.return_type != "None" %}
+        return {{ op.return_default_value }}  # Placeholder
+        {% else %}
+        pass
+        {% endif %}
+
+    {% endfor %}
+    {% for event in events %}
+    def on_{{ event.name_snake }}(self, callback: Callable[[{{ event.payload_type }}], None]) -> None:
+        # TODO: Implement event callback registration for '{{ event.name }}'
+        print(f"Consumer: Registering callback for event '{{ event.name }}'")
+        pass
+
+    {% endfor %}
+{% endblock methods %}
