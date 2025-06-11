@@ -23,6 +23,7 @@ This command-line tool generates Python classes from a submodel definition provi
 *   Python 3.7+
 *   Jinja2 (for templating)
 *   jsonschema (for validating input submodel definitions)
+*   requests (for fetching submodels from URLs)
 
 These dependencies are listed in `requirements.txt`.
 
@@ -46,25 +47,33 @@ These dependencies are listed in `requirements.txt`.
 The script is run from the command line:
 
 ```bash
-python submodel_generator.py <submodel_file_path> --output-dir <directory_path> --role <consumer_or_provider>
+python submodel_generator.py <submodel_file_path_or_url> --output-dir <directory_path> --role <consumer_or_provider>
 ```
 
 **Arguments:**
 
-*   `submodel_file_path`: (Required) Path to the JSON file containing the submodel definition.
+*   `<submodel_file_path_or_url>`: (Required) Path to the local JSON file OR a publicly accessible HTTP/HTTPS URL pointing to the raw JSON submodel definition.
 *   `--output-dir <directory_path>`: (Optional) The directory where the generated Python file(s) will be saved. Defaults to `generated_submodels`.
 *   `--role <consumer_or_provider>`: (Required) Specifies whether to generate code for a `consumer` or a `provider`.
 
-**Example Command:**
+**Example Commands:**
 
+Using a local file:
 ```bash
 python submodel_generator.py placeholder_submodel.json --output-dir generated_code --role consumer
 ```
-This command will read `placeholder_submodel.json`, generate a consumer class, and save it in the `generated_code` directory.
+
+Using a URL:
+```bash
+python submodel_generator.py https://example.com/path/to/your_submodel.json --output-dir generated_code --role consumer
+```
+This command will fetch and read `placeholder_submodel.json` (or the specified URL), generate a consumer class, and save it in the `generated_code` directory.
 
 ## Input Submodel Definition File
 
-The tool expects a JSON file describing the submodel. **Crucially, this input file MUST conform to the JSON schema located at `assets2036py/resources/submodel_schema.json` within this project.** This schema is the authoritative source for the expected structure. The `submodel_generator.py` script will validate your input file against this schema before attempting code generation.
+The tool expects a submodel definition as a JSON object, either from a local file or fetched from a URL. **Crucially, this input JSON MUST conform to the schema located at `assets2036py/resources/submodel_schema.json` within this project.** This schema is the authoritative source for the expected structure. The `submodel_generator.py` script will validate your input against this schema before attempting code generation.
+
+If providing a URL, it must be a direct link to the raw JSON content of the submodel definition.
 
 Key top-level fields defined by the schema include:
 

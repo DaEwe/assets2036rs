@@ -5,6 +5,8 @@ import re
 from typing import List, Callable, Optional, NamedTuple, Any, Dict # Keep existing typings
 import jsonschema
 from jinja2 import Environment, FileSystemLoader # Add Jinja2
+import requests  # New import
+from urllib.parse import urlparse # New import
 
 # --- Helper functions for name conversion ---
 def camel_to_snake(name):
@@ -309,7 +311,6 @@ def generate_code(submodel_data, role, output_dir):
     except IOError as e:
         print(f"ERROR: Could not write generated file. Details: {e}")
 
-# --- Main function (as before) ---
 def main():
     parser = argparse.ArgumentParser(description='Generate Python classes from a submodel definition.')
     parser.add_argument('submodel_file', type=str, help='Path to the submodel definition JSON file.')
@@ -317,7 +318,9 @@ def main():
     parser.add_argument('--role', type=str, choices=['consumer', 'provider'], required=True, help='Role to generate code for (consumer or provider).')
     args = parser.parse_args()
 
+    # --- Load Schema ---
     schema_filepath = "assets2036py/resources/submodel_schema.json"
+    submodel_json_schema = None
     try:
         with open(schema_filepath, 'r') as f_schema:
             submodel_json_schema = json.load(f_schema)
@@ -331,29 +334,80 @@ def main():
         print(f"Error: An unexpected error occurred while loading the JSON schema: {e}")
         return
 
+    # --- URL Detection and Data Loading ---
+    input_source = args.submodel_file
+    is_url = False
+    submodel_data_content = None
+    submodel_data = None
+
     try:
-        with open(args.submodel_file, 'r') as f_data:
-            submodel_data = json.load(f_data)
-    except FileNotFoundError:
-        print(f"Error: Submodel file not found at {args.submodel_file}")
-        return
-    except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from {args.submodel_file}")
-        return
-    except Exception as e:
-        print(f"Error: An unexpected error occurred while loading submodel file: {e}")
+        parsed_url = urlparse(input_source)
+        if parsed_url.scheme in ['http', 'https']:
+            is_url = True
+            print(f"DEBUG_URL: Input source '{input_source}' is identified as a URL.")
+        else:
+            print(f"DEBUG_URL: Input source '{input_source}' is identified as a local file path.")
+    except Exception as e_urlparse:
+        print(f"DEBUG_URL: Could not parse '{input_source}' as URL (Error: {e_urlparse}), treating as local file path.")
+        is_url = False
+
+    if is_url:
+        print(f"DEBUG_URL: Attempting to fetch submodel from URL: {input_source}")
+        try:
+            response = requests.get(input_source, timeout=10)
+            response.raise_for_status()
+            submodel_data_content = response.text
+            print(f"DEBUG_URL: Successfully fetched content from URL.")
+        except requests.exceptions.HTTPError as e_http:
+            print(f"Error: HTTP error fetching submodel from URL '{input_source}'. Status code: {e_http.response.status_code}. Response: {e_http.response.text[:200]}")
+            return
+        except requests.exceptions.ConnectionError as e_conn:
+            print(f"Error: Connection error fetching submodel from URL '{input_source}'. Details: {e_conn}")
+            return
+        except requests.exceptions.Timeout as e_timeout:
+            print(f"Error: Timeout while fetching submodel from URL '{input_source}'. Details: {e_timeout}")
+            return
+        except requests.exceptions.RequestException as e_req:
+            print(f"Error: An error occurred fetching submodel from URL '{input_source}'. Details: {e_req}")
+            return
+    else:
+        try:
+            with open(input_source, 'r') as f_data:
+                submodel_data_content = f_data.read()
+            print(f"DEBUG_URL: Successfully read content from local file: {input_source}")
+        except FileNotFoundError:
+            print(f"Error: Submodel file not found at {input_source}")
+            return
+        except Exception as e:
+            print(f"Error: An unexpected error occurred while reading local submodel file: {e}")
+            return
+
+    if submodel_data_content is None:
+        print("Error: Submodel data content could not be loaded/fetched. Exiting.")
         return
 
+    try:
+        submodel_data = json.loads(submodel_data_content)
+        print("DEBUG_URL: Successfully parsed JSON content into submodel_data.")
+    except json.JSONDecodeError as e_json:
+        print(f"Error: Could not decode JSON from the input source '{input_source}'. Details: {e_json}")
+        return
+
+    if submodel_data is None:
+        print(f"Error: Failed to load or parse submodel_data from '{input_source}'. Exiting.")
+        return
+
+    # --- Validate Submodel Data against Schema ---
     try:
         validator = jsonschema.Draft7Validator(submodel_json_schema)
         errors = sorted(validator.iter_errors(submodel_data), key=lambda e: e.path)
         if errors:
-            print(f"Error: Submodel file '{args.submodel_file}' is not valid according to the schema '{schema_filepath}'.")
+            print(f"Error: Submodel data from '{input_source}' is not valid according to the schema '{schema_filepath}'.")
             for error in errors:
                 print(f"- Validation Error: {'/'.join(map(str, error.path))} - {error.message}")
             return
         else:
-            print(f"Submodel file '{args.submodel_file}' successfully validated against the schema.")
+            print(f"Submodel data from '{input_source}' successfully validated against the schema.")
     except jsonschema.exceptions.SchemaError as e:
         print(f"Error: The JSON schema '{schema_filepath}' itself is invalid. Details: {e}")
         return
