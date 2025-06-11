@@ -6,7 +6,7 @@
     @property
     def {{ prop.name_snake }}(self) -> Optional[{{ prop.python_type }}]:
         if hasattr(self, '_prop_{{ prop.name_snake }}'):
-            return self._prop_{{ prop.name_snake }}.value
+            return self._prop_{{ prop.name_snake }}.value  # type: ignore
         # print(f"Warning: Accessing '{{ prop.name_snake }}' but underlying '_prop_{{ prop.name_snake }}' not found.") # Optional debug
         return None
 

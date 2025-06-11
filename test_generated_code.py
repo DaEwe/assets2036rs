@@ -216,14 +216,19 @@ class TestGeneratedCode(unittest.IsolatedAsyncioTestCase):
 
     # --- Provider Property Tests ---
     def test_provider_property_status_set(self):
-        mock_status_instance = self.provider._prop_status
+        mock_status_instance = self.provider._prop_status # This is an instance of self.MockWritableProperty
         self.assertIsInstance(mock_status_instance, MagicMock)
 
-        self.provider.status = "new_status"
-        mock_status_instance.set.assert_called_once_with("new_status")
+        new_value_to_set = "new_status_for_test"
+        self.provider.status = new_value_to_set  # This calls the generated setter
 
-        mock_status_instance.value = "new_status"
-        self.assertEqual(self.provider.status, "new_status")
+        # The generated setter does: self._prop_status.value = new_value_to_set
+        # Assert that the 'value' attribute of our mock '_prop_status' was set.
+        self.assertEqual(mock_status_instance.value, new_value_to_set)
+
+        # The getter should also return this new value.
+        # This also implicitly tests that mock_status_instance.value was indeed set correctly by the setter.
+        self.assertEqual(self.provider.status, new_value_to_set)
 
     def test_provider_property_status_on_change(self):
         mock_status_instance = self.provider._prop_status

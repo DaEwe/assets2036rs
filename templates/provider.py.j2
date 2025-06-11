@@ -6,22 +6,16 @@
     @property
     def {{ prop.name_snake }}(self) -> Optional[{{ prop.python_type }}]:
         if hasattr(self, '_prop_{{ prop.name_snake }}'):
-            return self._prop_{{ prop.name_snake }}.value
+            return self._prop_{{ prop.name_snake }}.value  # type: ignore
         # print(f"Warning: Accessing '{{ prop.name_snake }}' but underlying '_prop_{{ prop.name_snake }}' not found.") # Optional debug
         return None
 
     @{{ prop.name_snake }}.setter
     def {{ prop.name_snake }}(self, value: {{ prop.python_type }}) -> None:
         if hasattr(self, '_prop_{{ prop.name_snake }}'):
-            self._prop_{{ prop.name_snake }}.set(value) # Changed from .value = value
+            self._prop_{{ prop.name_snake }}.value = value  # type: ignore[assignment]
         else:
-            # This indicates an issue if __init__ didn't set up the property
-            # Or, if it's meant to be a ReadOnlyProperty on provider side (which current logic doesn't distinguish for setter)
-            print(f"Warning: Property '{{ prop.name_snake }}' not fully initialized or trying to set a ReadOnlyProperty.")
-            # For a strict WritableProperty, you might raise an AttributeError if _prop_ doesn't exist.
-            # However, the WritableProperty itself would handle read-only attempts if it was configured as such.
-            # For now, just printing a warning. If it *should* be writable, this is an init error.
-            # If it's conceptually read-only for provider, this setter shouldn't be called.
+            raise AttributeError(f"Property '{{ prop.name_snake }}' not initialized or does not support setting.")
 
     def on_{{ prop.name_snake }}_change(self, callback: Callable[[Optional[{{ prop.python_type }}]], None]) -> None:
         if hasattr(self, '_prop_{{ prop.name_snake }}'):

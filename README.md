@@ -102,10 +102,11 @@ The provided `placeholder_submodel.json` serves as a valid example conforming to
     *   Complex operation responses (i.e., type `object` with defined fields) are also generated as `typing.NamedTuple` (e.g., an operation `get_config` returning an object with `host` and `port` will have a `GetConfigResponse` NamedTuple).
 *   **Consumer Classes:**
     *   Properties are initialized with default values (e.g., `""` for strings, `0` for numbers, `False` for booleans, `[]` for lists, and recursively instantiated defaults for complex objects/NamedTuples) and include type hints.
+    *   **Note on Type Checking**: You may notice `# type: ignore` comments on the lines where property values are accessed or set (e.g., `return self._prop_xyz.value  # type: ignore`). This is because the `value` attribute in the underlying `assets2036py.assets.Property` class is dynamically typed in a way that static analysis tools like MyPy may not fully resolve. The type hints on the generated accessor methods themselves (e.g., `def status(self) -> Optional[str]:`) provide the intended type safety for users of the generated classes.
     *   Methods for calling submodel operations are named `call_<operation_name_snake_case>(...)` and are `async` (as they typically involve I/O).
     *   Methods for registering event callbacks are named `on_<event_name_snake_case>(callback)`.
 *   **Provider Classes:**
-    *   Properties are initialized similarly.
+    *   Properties are initialized similarly. (This also applies to the "Note on Type Checking" mentioned above for consumer properties, especially for provider setters which might have `# type: ignore[assignment]`.)
     *   Methods directly implement the submodel operations (e.g., `get_config(...)`).
     *   Methods for triggering events are named `trigger_<event_name_snake_case>(...)`.
 
