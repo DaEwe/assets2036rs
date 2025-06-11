@@ -32,6 +32,8 @@ paho-mqtt-stubs = "*"
 paho-mqtt = "*"
 jsonschema = "*"
 python-dateutil = "*"
+jinja2 = "*"
+requests = "*"
 
 [requires]
 python_version = "3.9"

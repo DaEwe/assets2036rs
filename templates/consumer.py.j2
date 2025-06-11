@@ -12,7 +12,7 @@
 
     def on_{{ prop.name_snake }}_change(self, callback: Callable[[Optional[{{ prop.python_type }}]], None]) -> None:
         if hasattr(self, '_prop_{{ prop.name_snake }}'):
-            self._prop_{{ prop.name_snake }}.on_change(callback)
+            self._prop_{{ prop.name_snake }}.on_change(callback)  # type: ignore
         else:
             print(f"Warning: Property '{{ prop.name_snake }}' not fully initialized for on_change subscription.")
     {% endfor %}
