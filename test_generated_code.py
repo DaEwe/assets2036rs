@@ -121,6 +121,21 @@ class TestGeneratedCode(unittest.TestCase):
             cls.ConsumerGetConfigResponse = getattr(cls.consumer_module, "GetConfigResponse", None)
             cls.ProviderGetConfigResponse = getattr(cls.provider_module, "GetConfigResponse", None)
 
+            # --- DEBUG_TEST Prints ---
+            print(f"DEBUG_TEST: PlaceholderSubmodelConsumer loaded: {cls.PlaceholderSubmodelConsumer is not None}")
+            print(f"DEBUG_TEST: PlaceholderSubmodelProvider loaded: {cls.PlaceholderSubmodelProvider is not None}")
+            print(f"DEBUG_TEST: ConsumerConfiguration loaded: {cls.ConsumerConfiguration is not None}")
+            print(f"DEBUG_TEST: ProviderConfiguration loaded: {cls.ProviderConfiguration is not None}")
+            print(f"DEBUG_TEST: ConsumerComplexNested loaded: {cls.ConsumerComplexNested is not None}")
+            print(f"DEBUG_TEST: ProviderComplexNested loaded: {cls.ProviderComplexNested is not None}")
+            print(f"DEBUG_TEST: ConsumerLevelOne loaded: {cls.ConsumerLevelOne is not None}")
+            print(f"DEBUG_TEST: ProviderLevelOne loaded: {cls.ProviderLevelOne is not None}")
+            print(f"DEBUG_TEST: ConsumerErrorOccurredPayload loaded: {cls.ConsumerErrorOccurredPayload is not None}")
+            print(f"DEBUG_TEST: ProviderErrorOccurredPayload loaded: {cls.ProviderErrorOccurredPayload is not None}")
+            print(f"DEBUG_TEST: ConsumerGetConfigResponse loaded: {cls.ConsumerGetConfigResponse is not None}")
+            print(f"DEBUG_TEST: ProviderGetConfigResponse loaded: {cls.ProviderGetConfigResponse is not None}")
+            # --- End DEBUG_TEST Prints ---
+
         except Exception as e:
             print(f"Failed to import generated modules: {e}")
             # Print files in TEST_OUTPUT_DIR to help debug
