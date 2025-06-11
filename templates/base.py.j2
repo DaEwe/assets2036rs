@@ -1,5 +1,7 @@
 from typing import List, Callable, Optional, NamedTuple, Any, Dict
 import abc
+from assets2036py.assets import Asset, ReadOnlyProperty, WritableProperty, SubscribableEvent, TriggerableEvent, CallableOperation, BindableOperation # Added Operation classes
+import json
 
 # --- Generated Nested Classes & NamedTuples ---
 {% for nested_class in nested_classes %}
@@ -17,13 +19,13 @@ class {{ nested_class.name }}:
 {% endfor %}
 {% for event_payload in event_payloads %}
 class {{ event_payload.name }}(NamedTuple):
-    {% if event_payload.params -%}
+    {% if event_payload.params %}
     {% for param in event_payload.params %}
     {{ param.name_snake }}: {{ param.type_py }}
     {% endfor %}
-    {%- else %}
+    {% else %}
     pass
-    {%- endif %}
+    {% endif %}
 
 {% endfor %}
 {% for op_response in operation_responses %}
@@ -38,15 +40,62 @@ class {{ op_response.name }}(NamedTuple):
 
 # --- Main Submodel Class ---
 class {{ submodel_class_name }}:
-    SUBMODEL_NAME = "{{ submodel_name }}"
-    SUBMODEL_REVISION = "{{ submodel_revision }}"
+    # BASE_PY_J2 __INIT__ VERSION_PROPERTIES_FIX
+    # Removed SUBMODEL_NAME and SUBMODEL_REVISION class attributes from here
 
-    def __init__(self):
+    def __init__(self, {{ parent_asset_param_name_for_init_signature }}: Asset, {{ submodel_name_param_name_for_init_signature }}: str):
+        # print(f"DEBUG: Initializing {{ submodel_class_name }} for {{ parent_asset_param_name_for_init_signature }}.name / {{ submodel_name_param_name_for_init_signature }}")
+        self.parent_asset = {{ parent_asset_param_name_for_init_signature }}
+        self.submodel_name = {{ submodel_name_param_name_for_init_signature }}
+        self.communication_client = self.parent_asset.communication_client
+        self.access_mode = self.parent_asset.access_mode
+
         {% for prop in properties %}
-        self.{{ prop.name_snake }}: {{ prop.type_py }} = {{ prop.default_value }}
+        # prop.schema_dict_str is a JSON string. json.loads converts it to a Python dict.
+        # The |tojson filter ensures the string prop.schema_dict_str is correctly escaped
+        # to be a valid Python string literal when injected into json.loads(...).
+        prop_schema_dict_for_{{ prop.name_snake }} = json.loads({{ prop.schema_dict_str | tojson }})
+        self._prop_{{ prop.name_snake }} = {% if role == 'consumer' %}ReadOnlyProperty{% else %}WritableProperty{% endif %}(
+            name="{{ prop.name }}",  # Use original name from submodel definition
+            parent=self,
+            property_definition=prop_schema_dict_for_{{ prop.name_snake }}
+        )
+        # print(f"DEBUG: Initialized property _{{ prop.name_snake }} for {{ prop.name }}")
         {% else %}
-        pass
+        # This part might be reached if submodel_data['properties'] is empty or not present
+        # print("DEBUG: No properties found in submodel_data to initialize in {{ submodel_class_name }}.")
+        pass # No properties to initialize
         {% endfor %}
+
+        {% for event in events %}
+        event_def_dict_for_{{ event.name_snake }} = json.loads({{ event.event_definition_str | tojson }})
+        self._event_{{ event.name_snake }} = {% if role == 'consumer' %}SubscribableEvent{% else %}TriggerableEvent{% endif %}(
+            name="{{ event.name }}",  # Original event name
+            parent=self,
+            event_definition=event_def_dict_for_{{ event.name_snake }}
+        )
+        # print(f"DEBUG: Initialized event _{{ event.name_snake }} for {{ event.name }}")
+        {% else %}
+        # print("DEBUG: No events found in submodel_data to initialize in {{ submodel_class_name }}.")
+        pass # No events to initialize
+        {% endfor %}
+
+        {% for op in operations %}
+        op_def_dict_for_{{ op.name_snake }} = json.loads({{ op.operation_definition_str | tojson }})
+        self._op_{{ op.name_snake }} = {% if role == 'consumer' %}CallableOperation{% else %}BindableOperation{% endif %}(
+            name="{{ op.name }}",
+            parent=self,
+            operation_definition=op_def_dict_for_{{ op.name_snake }}
+        )
+        # print(f"DEBUG: Initialized operation _op_{{ op.name_snake }} for {{ op.name }}")
+        {% else %}
+        # print("DEBUG: No operations found in submodel_data to initialize in {{ submodel_class_name }}.")
+        pass # No operations to initialize
+        {% endfor %}
+
+    def _get_topic(self) -> str:
+        # The self.submodel_name is expected to be pre-sanitized by the generator.
+        return f"{self.parent_asset.namespace}/{self.parent_asset.name}/{self.submodel_name}"
 
     {% block methods %}
     {% endblock methods %}

@@ -1,30 +1,84 @@
 {% extends "base.py.j2" %}
 
 {% block methods %}
-    {% for op in operations %}
-    def {{ op.name_snake }}(self{% for param in op.params %}, {{ param.name_snake }}: {{ param.type_py }}{% endfor %}) -> {{ op.return_type }}:
-        # TODO: Implement actual logic for operation '{{ op.name }}'
-        print(f"Provider: Operation '{{ op.name }}' called")
-        {% if op.return_type != "None" %}
-        return {{ op.return_default_value }}  # Placeholder
-        {% else %}
-        pass
-        {% endif %}
+    {# --- Provider Properties --- #}
+    {% for prop in properties %}
+    @property
+    def {{ prop.name_snake }}(self) -> Optional[{{ prop.python_type }}]:
+        if hasattr(self, '_prop_{{ prop.name_snake }}'):
+            return self._prop_{{ prop.name_snake }}.value
+        # print(f"Warning: Accessing '{{ prop.name_snake }}' but underlying '_prop_{{ prop.name_snake }}' not found.") # Optional debug
+        return None
 
+    @{{ prop.name_snake }}.setter
+    def {{ prop.name_snake }}(self, value: {{ prop.python_type }}) -> None:
+        if hasattr(self, '_prop_{{ prop.name_snake }}'):
+            self._prop_{{ prop.name_snake }}.set(value) # Changed from .value = value
+        else:
+            # This indicates an issue if __init__ didn't set up the property
+            # Or, if it's meant to be a ReadOnlyProperty on provider side (which current logic doesn't distinguish for setter)
+            print(f"Warning: Property '{{ prop.name_snake }}' not fully initialized or trying to set a ReadOnlyProperty.")
+            # For a strict WritableProperty, you might raise an AttributeError if _prop_ doesn't exist.
+            # However, the WritableProperty itself would handle read-only attempts if it was configured as such.
+            # For now, just printing a warning. If it *should* be writable, this is an init error.
+            # If it's conceptually read-only for provider, this setter shouldn't be called.
+
+    def on_{{ prop.name_snake }}_change(self, callback: Callable[[Optional[{{ prop.python_type }}]], None]) -> None:
+        if hasattr(self, '_prop_{{ prop.name_snake }}'):
+            self._prop_{{ prop.name_snake }}.on_change(callback)
+        else:
+            print(f"Warning: Property '{{ prop.name_snake }}' not fully initialized for on_change subscription.")
     {% endfor %}
-    {% for event in events %}
-    def trigger_{{ event.name_snake }}(self{% for param in event.trigger_params %}, {{ param.name_snake }}: {{ param.type_py }}{% endfor %}) -> None:
-        # TODO: Implement actual event triggering for '{{ event.name }}'
-        {% if event.payload_type != "Dict[str, Any]" and event.payload_type != "None" and event.trigger_params %}
-        payload = {{ event.payload_type }}({% for p in event.trigger_params %}{{p.name_snake}}={{p.name_snake}}{% if not loop.last %}, {% endif %}{% endfor %})
-        print(f"Provider: Triggering event '{{ event.name }}' with payload {{ payload }}")
-        {% elif event.payload_type == "None" and not event.trigger_params %}
-        print(f"Provider: Triggering event '{{ event.name }}' (no payload)")
-        {% else %}
-        # This case handles Dict[str, Any] or if params are present but not forming a specific payload type
-        print(f"Provider: Triggering event '{{ event.name }}'{% if event.trigger_params %} with parameters{% endif %}")
-        {% endif %}
-        pass
 
+    {# --- Provider Operations --- #}
+    {% for op in operations %}
+    def bind_{{ op.name_snake }}(self, callback: Callable[[{% for param in op.params %}{{ param.type_py }}{% if not loop.last %}, {% endif %}{% endfor %}], {{ op.return_type }}]) -> None:
+        # internal_callback_wrapper adapts the user's typed callback to the
+        # (parameters: Dict[str, Any]) -> Any signature expected by assets.py BindableOperation.bind.
+        def internal_callback_wrapper(parameters: Dict[str, Any]) -> Any:
+            try:
+                # Prepare arguments for the user's callback, ensuring correct names.
+                # assets.py's BindableOperation already validates parameters against its schema.
+                cb_args = {
+                    {%- for param in op.params %}
+                    "{{ param.name_snake }}": parameters.get("{{ param.name_snake }}")
+                    {%- if not loop.last %},{% endif %}
+                    {%- endfor %}
+                }
+                # Filter out None values if a param was not in `parameters`
+                # This handles cases where a parameter might be optional in the submodel definition
+                # but the Python type hint doesn't explicitly show Optional (e.g. for int, str defaults).
+                # The user's callback should handle Optional types if a parameter truly can be absent.
+                cb_args_filtered = {k: v for k, v in cb_args.items() if k in parameters}
+
+                return callback(**cb_args_filtered) # Call the user-provided callback
+            except Exception as e:
+                print(f"Error in user-provided callback for operation '{{ op.name }}': {e}")
+                {% if op.return_type != "None" %}
+                return {{ op.return_default_value }}
+                {% else %}
+                return None
+                {% endif %}
+
+        if hasattr(self, '_op_{{ op.name_snake }}'): # Corrected attribute name
+            self._op_{{ op.name_snake }}.bind(internal_callback_wrapper)
+        else:
+            raise AttributeError(f"Operation '{{ op.name_snake }}' not initialized.")
+    {% endfor %}
+    {# --- Provider Event Triggers --- #}
+    {% for event in events %}
+    def trigger_{{ event.name_snake }}(self{% for param in event.payload_params %}, {{ param.name_snake }}: {{ param.type_py }}{% endfor %}) -> None: # Changed event.trigger_params to event.payload_params
+        if hasattr(self, '_event_{{ event.name_snake }}'):
+            # Construct the parameters dictionary expected by TriggerableEvent.trigger()
+            params_dict = {
+                {%- for param in event.payload_params %}
+                "{{ param.name_snake }}": {{ param.name_snake }}{% if not loop.last %},{% endif %}
+                {%- endfor %}
+            }
+            # print(f"DEBUG_PROVIDER: Triggering event '{{ event.name }}' with params_dict: {params_dict}") # Optional Debug
+            self._event_{{ event.name_snake }}.trigger(**params_dict)
+        else:
+            # This would indicate an initialization error in __init__
+            raise AttributeError(f"Event '{{ event.name_snake }}' not initialized properly.")
     {% endfor %}
 {% endblock methods %}

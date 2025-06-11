@@ -1,22 +1,71 @@
 {% extends "base.py.j2" %}
 
 {% block methods %}
+    {# --- Consumer Properties --- #}
+    {% for prop in properties %}
+    @property
+    def {{ prop.name_snake }}(self) -> Optional[{{ prop.python_type }}]:
+        if hasattr(self, '_prop_{{ prop.name_snake }}'):
+            return self._prop_{{ prop.name_snake }}.value
+        # print(f"Warning: Accessing '{{ prop.name_snake }}' but underlying '_prop_{{ prop.name_snake }}' not found.") # Optional debug
+        return None
+
+    def on_{{ prop.name_snake }}_change(self, callback: Callable[[Optional[{{ prop.python_type }}]], None]) -> None:
+        if hasattr(self, '_prop_{{ prop.name_snake }}'):
+            self._prop_{{ prop.name_snake }}.on_change(callback)
+        else:
+            print(f"Warning: Property '{{ prop.name_snake }}' not fully initialized for on_change subscription.")
+    {% endfor %}
+
+    {# --- Consumer Operations --- #}
     {% for op in operations %}
     async def call_{{ op.name_snake }}(self{% for param in op.params %}, {{ param.name_snake }}: {{ param.type_py }}{% endfor %}) -> {{ op.return_type }}:
-        # TODO: Implement actual call to provider for '{{ op.name }}'
-        print(f"Consumer: Calling operation '{{ op.name }}'")
-        {% if op.return_type != "None" %}
-        return {{ op.return_default_value }}  # Placeholder
-        {% else %}
-        pass
-        {% endif %}
-
+        if hasattr(self, '_op_{{ op.name_snake }}'): # Corrected attribute name
+            params_dict = {
+                {%- for param in op.params %}
+                "{{ param.name_snake }}": {{ param.name_snake }}{% if not loop.last %},{% endif %}
+                {%- endfor %}
+            }
+            # Not exposing timeout in the generated method signature for now. Default will be used by .invoke()
+            return await self._op_{{ op.name_snake }}.invoke(**params_dict)
+        else:
+            # This case implies an issue with __init__ if the instance isn't there.
+            print(f"Warning: Operation '{{ op.name_snake }}' not initialized.") # Changed to warning for now
+            {% if op.return_type != "None" %}
+            return {{ op.return_default_value }}  # Return default on error
+            {% else %}
+            return None # Or pass
+            {% endif %}
     {% endfor %}
+    {# --- Consumer Event Handlers --- #}
     {% for event in events %}
-    def on_{{ event.name_snake }}(self, callback: Callable[[{{ event.payload_type }}], None]) -> None:
-        # TODO: Implement event callback registration for '{{ event.name }}'
-        print(f"Consumer: Registering callback for event '{{ event.name }}'")
-        pass
+    def on_{{ event.name_snake }}(self, callback: Callable[[{% if event.payload_type != "Dict[str, Any]" and event.payload_type != "None" %}{{ event.payload_type }}{% else %}Dict[str, Any]{% endif %}{% if event.payload_type != "None" %}, float{% endif %}], None]) -> None:
+        # assets.py SubscribableEvent.on_event expects callback_func(parameters: Dict[str, Any], timestamp: float)
+        # This wrapper adapts it to a user-friendly callback: (PayloadType, timestamp) or (Dict[str,Any], timestamp) or (timestamp)
+        def internal_callback_wrapper(parameters: Dict[str, Any], timestamp: float):
+            {% if event.payload_type != "Dict[str, Any]" and event.payload_type != "None" and event.payload_params %}
+            try:
+                # Ensure all required keys for the NamedTuple are present in parameters, otherwise it will raise TypeError
+                # This is a simple way to filter; more sophisticated logic might be needed if parameters can have extra fields
+                # that are not part of the NamedTuple, or if some NamedTuple fields are Optional and might be missing.
+                # For now, assume 'parameters' from the event exactly matches the NamedTuple fields.
+                payload_instance = {{ event.payload_type }}(**parameters)
+                callback(payload_instance, timestamp)
+            except TypeError as e:
+                print(f"Error creating payload for event '{{ event.name }}': {e}. Raw params: {parameters}")
+                # Fallback: pass raw dictionary and timestamp if payload creation fails
+                # Or, users can make their callback accept Dict[str, Any] if they expect potential errors
+                # callback(parameters, timestamp) # Option 1: Pass raw dict
+                # Option 2: Do nothing or log, as type contract is broken
+            {% elif event.payload_type != "None" %} {# Covers Dict[str, Any] #}
+            callback(parameters, timestamp)
+            {% else %} {# No payload, event.payload_type is "None" #}
+            callback(timestamp)
+            {% endif %}
 
+        if hasattr(self, '_event_{{ event.name_snake }}'):
+            self._event_{{ event.name_snake }}.subscribe(internal_callback_wrapper) # Changed on_event to subscribe
+        else:
+            print(f"Warning: Event '{{ event.name_snake }}' not fully initialized for on_event subscription.")
     {% endfor %}
 {% endblock methods %}
